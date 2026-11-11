@@ -12,16 +12,10 @@ def focal_px(frame_width: int, hfov_deg: float) -> float:
 
 
 def sample_depth(depth_map: np.ndarray, box: tuple[int, int, int, int], s: Settings) -> float | None:
+    # Внутренняя часть рамки (без краёв, где фон), затем перцентиль —
+    # ближние пиксели принадлежат объекту, дальние — фону за ним.
     h, w = depth_map.shape
     x1, y1, x2, y2 = box
-    if s.sampling == "center":
-        # Старый способ: квадрат 10x10 в центре рамки (часто попадает в фон)
-        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-        patch = depth_map[max(0, cy - 5):min(h, cy + 5), max(0, cx - 5):min(w, cx + 5)]
-        return float(np.mean(patch)) if patch.size else None
-
-    # Robust: внутренняя часть рамки (без краёв, где фон), затем перцентиль —
-    # ближние пиксели принадлежат объекту, дальние — фону за ним.
     bw, bh = x2 - x1, y2 - y1
     ix1, ix2 = x1 + int(bw * 0.2), x2 - int(bw * 0.2)
     iy1, iy2 = y1 + int(bh * 0.15), y2 - int(bh * 0.1)

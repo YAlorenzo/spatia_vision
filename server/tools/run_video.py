@@ -1,8 +1,7 @@
 """Прогон конвейера по видеофайлу (без фронта).
 
 Примеры (из папки server/):
-    .venv/Scripts/python tools/run_video.py                      # новый алгоритм
-    .venv/Scripts/python tools/run_video.py --preset baseline    # старый (MiDaS + центр)
+    .venv/Scripts/python tools/run_video.py                      # тестовое видео -> output/
     .venv/Scripts/python tools/run_video.py --live               # реальное время в окне (q — выход)
     .venv/Scripts/python tools/run_video.py --live --video 0     # веб-камера ноутбука
     .venv/Scripts/python tools/run_video.py --show               # окно, но каждый кадр (замедленно)
@@ -26,7 +25,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from spatia import Pipeline, Settings  # noqa: E402
-from spatia.config import SERVER_DIR  # noqa: E402
+from spatia.config import DEPTH_MODELS, SERVER_DIR  # noqa: E402
 from spatia.schemas import FrameDebug  # noqa: E402
 
 URGENCY_COLORS = {"high": (40, 40, 255), "medium": (0, 200, 255), "low": (80, 220, 80)}
@@ -36,7 +35,6 @@ DEPTH_VIS_MAX_M = 25.0
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--video", default=str(SERVER_DIR / "test_video.mp4"))
-    p.add_argument("--preset", choices=["new", "baseline"], default="new")
     p.add_argument("--indoor", action="store_true", help="Depth Anything Indoor (до 20 м)")
     p.add_argument("--hfov", type=float, default=None, help="Горизонтальный FOV камеры, град.")
     p.add_argument("--max-frames", type=int, default=0)
@@ -94,13 +92,13 @@ def jitter_pct(values: list[float]) -> float | None:
 
 def main() -> None:
     args = parse_args()
-    settings = Settings.baseline() if args.preset == "baseline" else Settings()
+    settings = Settings()
     if args.indoor:
-        settings.depth_model_id = "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
+        settings.depth_model_id = DEPTH_MODELS["indoor"]
     if args.hfov:
         settings.camera_hfov_deg = args.hfov
 
-    name = args.name or f"{Path(args.video).stem}_{args.preset}"
+    name = args.name or Path(args.video).stem
     out_dir = SERVER_DIR / "output" / name
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -108,7 +106,7 @@ def main() -> None:
         args.show, args.no_video = True, True
 
     pipeline = Pipeline(settings)
-    label = f"{args.preset}: {pipeline.depth.name}"
+    label = pipeline.depth.name
     is_webcam = args.video.isdigit()  # --video 0 = веб-камера ноутбука
     cap = cv2.VideoCapture(int(args.video) if is_webcam else args.video)
     if not cap.isOpened():
@@ -176,7 +174,7 @@ def main() -> None:
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
         if i % 50 == 0:
-            print(f"  кадр {src_pos}/{total}  {dbg.timings_ms['total']:.0f}ms  объектов: {len(result.obstacles)}")
+            print(f"  кадр {src_pos}/{total if total > 0 else '?'}  {dbg.timings_ms['total']:.0f}ms  объектов: {len(result.obstacles)}")
         i += 1
 
     cap.release()
@@ -211,7 +209,7 @@ def main() -> None:
         return round(statistics.median(vals), 1) if vals else None
 
     summary = {
-        "preset": args.preset,
+        "video": args.video,
         "depth_model": pipeline.depth.name,
         "frames": i,
         "ms_per_frame": round(statistics.mean(timings), 1) if timings else None,

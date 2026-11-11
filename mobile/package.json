@@ -6,7 +6,6 @@
     "@expo/metro-runtime": "~58.0.17",
     "babel-preset-expo": "~58.0.0",
     "expo": "~58.0.23",
-    "expo-av": "^16.0.8",
     "expo-camera": "~58.0.14",
     "expo-status-bar": "~58.0.4",
     "nativewind": "^4.2.7",

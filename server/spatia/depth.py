@@ -13,7 +13,7 @@ _STD = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
 _PATCH = 14  # ViT patch size — стороны входа должны быть кратны 14
 
 
-class DepthAnythingMetric:
+class DepthEstimator:
     def __init__(self, model_id: str, device: str, input_size: int = 518):
         self.name = model_id.split("/")[-1]
         self.device = torch.device(device)
@@ -35,6 +35,7 @@ class DepthAnythingMetric:
 
     @torch.inference_mode()
     def estimate(self, frame_bgr: np.ndarray) -> np.ndarray:
+        """Карта дистанций в метрах (float32, H x W, как у кадра)."""
         h, w = frame_bgr.shape[:2]
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         # Предобработка целиком на GPU — быстрее, чем HF image processor на CPU

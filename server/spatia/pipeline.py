@@ -6,7 +6,7 @@ import torch
 
 from . import distance as dist
 from .config import Settings
-from .depth import create_depth_estimator
+from .depth import DepthEstimator
 from .detection import Detector
 from .schemas import DistanceEstimate, FrameDebug, FrameResult, Obstacle, TrackedObject
 from .spatial import urgency, zone_and_pan
@@ -16,9 +16,9 @@ class Pipeline:
     def __init__(self, settings: Settings | None = None):
         self.s = settings or Settings()
         self.device = self.s.device if torch.cuda.is_available() else "cpu"
-        print(f"[pipeline] device={self.device}, depth={self.s.depth_backend}")
+        print(f"[pipeline] device={self.device}, depth={self.s.depth_model_id}")
         self.detector = Detector(self.s, self.device)
-        self.depth = create_depth_estimator(self.s, self.device)
+        self.depth = DepthEstimator(self.s.depth_model_id, self.device, self.s.depth_input_size)
         self.smoother = dist.DistanceSmoother(self.s)
         self.calibrator = dist.DepthScaleCalibrator(self.s)
         self.frame_idx = 0

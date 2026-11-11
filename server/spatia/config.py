@@ -1,7 +1,6 @@
 """Все настройки бэкенда в одном месте."""
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
 
 SERVER_DIR = Path(__file__).resolve().parent.parent
 
@@ -44,8 +43,10 @@ OBSTACLE_CLASSES: frozenset[str] = frozenset({
     "tv", "sink", "refrigerator", "oven", "microwave", "vase",
 })
 
-DepthBackend = Literal["depth_anything", "midas"]
-Sampling = Literal["robust", "center"]
+DEPTH_MODELS = {
+    "outdoor": "depth-anything/Depth-Anything-V2-Metric-Outdoor-Small-hf",  # улица, до 80 м
+    "indoor": "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf",  # помещения, до 20 м
+}
 
 
 @dataclass
@@ -60,14 +61,10 @@ class Settings:
     obstacle_classes: frozenset[str] = OBSTACLE_CLASSES
 
     # --- Глубина ---
-    depth_backend: DepthBackend = "depth_anything"
-    # Outdoor — улица (до 80 м), Indoor — помещения (до 20 м)
-    depth_model_id: str = "depth-anything/Depth-Anything-V2-Metric-Outdoor-Small-hf"
+    depth_model_id: str = DEPTH_MODELS["outdoor"]
     depth_input_size: int = 518  # короткая сторона входа модели (кратно 14)
-    midas_scale: float = 1500.0  # только для legacy MiDaS
 
     # --- Дистанция ---
-    sampling: Sampling = "robust"  # "center" = старый способ (точка в центре рамки)
     depth_percentile: float = 30.0  # ближние 30% пикселей объекта — отсекает фон
     camera_hfov_deg: float = 65.0  # горизонтальный угол обзора камеры (телефон ~60-70°)
     use_geometry: bool = True
@@ -90,18 +87,3 @@ class Settings:
     # --- Пространство ---
     near_m: float = 2.0  # ближе — "high"
     mid_m: float = 4.0  # ближе — "medium", дальше — "low"
-
-    @classmethod
-    def baseline(cls) -> "Settings":
-        """Воспроизводит старый алгоритм (MiDaS + точка в центре) для сравнения."""
-        return cls(
-            depth_backend="midas",
-            sampling="center",
-            use_geometry=False,
-            auto_scale=False,
-            smoothing=False,
-            use_tracking=True,  # только для ID в отчёте, на дистанцию не влияет
-            yolo_conf=0.5,
-            min_distance_m=0.5,
-            max_distance_m=1e9,
-        )
