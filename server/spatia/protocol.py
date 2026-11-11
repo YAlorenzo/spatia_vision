@@ -1,0 +1,67 @@
+"""Протокол WebSocket /ws (версия 1).
+
+Клиент -> сервер
+  text   {"type":"hello", "v":1, "platform":"web", "scene":"outdoor", "hfov":65}
+         первое сообщение после подключения
+  text   {"type":"config", "scene":"indoor", "hfov":70}
+         смена настроек на лету (все поля необязательны)
+  binary [uint32 big-endian seq][JPEG]
+         кадр. Клиент шлёт следующий кадр только после ответа на предыдущий.
+
+Сервер -> клиент
+  text   {"type":"ready", "v":1, "session":"…", "max_width":640}
+  text   {"type":"result", "seq":42, "obstacles":[…], "server_ms":65.3, "dropped":0}
+  text   {"type":"error", "message":"…"}
+"""
+import struct
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+from .config import Scene
+from .schemas import Obstacle
+
+PROTOCOL_VERSION = 1
+FRAME_HEADER = struct.Struct(">I")  # seq: uint32 big-endian
+CLIENT_MAX_WIDTH = 640  # клиент ужимает кадр до этой ширины перед отправкой
+
+
+class Hello(BaseModel):
+    type: Literal["hello"]
+    v: int = PROTOCOL_VERSION
+    platform: str = "unknown"
+    scene: Scene | None = None
+    hfov: float | None = Field(default=None, gt=20, lt=150)
+
+
+class Config(BaseModel):
+    type: Literal["config"]
+    scene: Scene | None = None
+    hfov: float | None = Field(default=None, gt=20, lt=150)
+
+
+class Ready(BaseModel):
+    type: Literal["ready"] = "ready"
+    v: int = PROTOCOL_VERSION
+    session: str
+    max_width: int = CLIENT_MAX_WIDTH
+
+
+class Result(BaseModel):
+    type: Literal["result"] = "result"
+    seq: int
+    obstacles: list[Obstacle]
+    server_ms: float
+    dropped: int  # сколько кадров сервер выбросил как устаревшие (за сессию)
+
+
+class Error(BaseModel):
+    type: Literal["error"] = "error"
+    message: str
+
+
+def parse_frame(data: bytes) -> tuple[int, bytes]:
+    if len(data) <= FRAME_HEADER.size:
+        raise ValueError("кадр слишком короткий")
+    (seq,) = FRAME_HEADER.unpack_from(data)
+    return seq, data[FRAME_HEADER.size:]

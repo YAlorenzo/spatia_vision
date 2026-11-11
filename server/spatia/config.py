@@ -1,6 +1,7 @@
 """Все настройки бэкенда в одном месте."""
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 SERVER_DIR = Path(__file__).resolve().parent.parent
 
@@ -43,7 +44,9 @@ OBSTACLE_CLASSES: frozenset[str] = frozenset({
     "tv", "sink", "refrigerator", "oven", "microwave", "vase",
 })
 
-DEPTH_MODELS = {
+Scene = Literal["outdoor", "indoor"]
+
+DEPTH_MODELS: dict[str, str] = {
     "outdoor": "depth-anything/Depth-Anything-V2-Metric-Outdoor-Small-hf",  # улица, до 80 м
     "indoor": "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf",  # помещения, до 20 м
 }
@@ -58,6 +61,7 @@ class Settings:
     yolo_conf: float = 0.45
     yolo_imgsz: int = 640
     use_tracking: bool = True  # ByteTrack: стабильные ID объектов между кадрами
+    max_frame_width: int = 960  # кадры шире ужимаем (защита от огромных фото)
     obstacle_classes: frozenset[str] = OBSTACLE_CLASSES
 
     # --- Глубина ---

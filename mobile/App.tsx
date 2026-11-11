@@ -6,9 +6,6 @@ import { HomeScreen } from "./src/screens/HomeScreen";
 import { ScannerScreen } from "./src/screens/ScannerScreen";
 
 
-// IP для теста. Позже заменим на твой локальный/туннель
-const SERVER_URL = "ws://192.168.1.100:8000/ws";
-
 export default function App() {
   const [permission, requestPermission] = useCameraPermissions();
   const [isScanning, setIsScanning] = useState(false);
@@ -36,12 +33,7 @@ export default function App() {
   }
 
   if (isScanning) {
-    return (
-      <ScannerScreen
-        serverUrl={SERVER_URL}
-        onStop={() => setIsScanning(false)}
-      />
-    );
+    return <ScannerScreen onStop={() => setIsScanning(false)} />;
   }
 
   return <HomeScreen onStart={() => setIsScanning(true)} />;

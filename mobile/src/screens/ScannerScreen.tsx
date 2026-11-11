@@ -1,55 +1,118 @@
-import { useEffect, useRef } from "react";
-import { View, TouchableOpacity, Text } from "react-native";
+import { useMemo, useRef, useState } from "react";
+import { Text, TouchableOpacity, View } from "react-native";
 import { CameraView } from "expo-camera";
 import { cssInterop } from "nativewind";
-import { useServerStream } from "../api/useServerStream";
+import type { Scene } from "../api/protocol";
+import { getServerUrl } from "../api/serverUrl";
+import { StreamStatus, useServerStream } from "../api/useServerStream";
+import { ObstacleOverlay } from "../components/ObstacleOverlay";
+import { describe, URGENCY_COLOR } from "../components/labels";
 
 // CameraView — сторонний компонент, NativeWind должен знать, что className -> style
 cssInterop(CameraView, { className: "style" });
 
+const STATUS_TEXT: Record<StreamStatus, string> = {
+  connecting: "Подключение…",
+  streaming: "На связи",
+  reconnecting: "Переподключение…",
+  stopped: "Остановлено",
+};
+
+const STATUS_DOT: Record<StreamStatus, string> = {
+  connecting: "bg-amber-400",
+  streaming: "bg-green-500",
+  reconnecting: "bg-red-500",
+  stopped: "bg-zinc-500",
+};
+
 interface ScannerScreenProps {
   onStop: () => void;
-  serverUrl: string;
 }
 
-export const ScannerScreen = ({ onStop, serverUrl }: ScannerScreenProps) => {
+export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
   const cameraRef = useRef<CameraView | null>(null);
-  const { sendFrame } = useServerStream(serverUrl);
+  const [cameraReady, setCameraReady] = useState(false);
+  const [scene, setScene] = useState<Scene>("outdoor");
+  const url = useMemo(() => getServerUrl(), []);
 
-  useEffect(() => {
-    console.log("▶️ Запуск цикла захвата...");
-    const interval = setInterval(async () => {
-      if (cameraRef.current) {
-        try {
-          const photo = await cameraRef.current.takePictureAsync({
-            quality: 0.1,
-            base64: true,
-          });
-          if (photo?.base64) {
-            sendFrame(photo.base64);
-            console.log("🚀 Кадр отправлен");
-          }
-        } catch (e) {
-          console.error("Ошибка захвата кадра:", e);
-        }
-      }
-    }, 1000);
+  const { status, obstacles, stats, frameSize, error } = useServerStream({
+    url,
+    cameraRef,
+    cameraReady,
+    enabled: true,
+    scene,
+  });
 
-    return () => clearInterval(interval);
-  }, [sendFrame]);
+  const nearest = obstacles[0];
 
   return (
     <View className="flex-1 bg-zinc-950">
-      <CameraView ref={cameraRef} className="flex-1" facing="back" />
+      <CameraView
+        ref={cameraRef}
+        className="flex-1"
+        facing="back"
+        onCameraReady={() => setCameraReady(true)}
+      />
 
-      <View className="absolute bottom-12 w-full items-center">
+      <ObstacleOverlay obstacles={obstacles} frameSize={frameSize} />
+
+      {/* Статус соединения и переключатель сцены */}
+      <View className="absolute top-4 left-4 right-4 gap-2">
+        <View className="flex-row items-center justify-between rounded-2xl bg-black/60 px-4 py-2">
+          <View className="flex-row items-center gap-2">
+            <View className={`h-3 w-3 rounded-full ${STATUS_DOT[status]}`} />
+            <Text className="text-white font-semibold">{STATUS_TEXT[status]}</Text>
+          </View>
+          {status === "streaming" && (
+            <Text className="text-zinc-300 text-xs">
+              {stats.fps.toFixed(1)} к/с · {Math.round(stats.rttMs)} мс · {Math.round(stats.frameKb)} КБ
+            </Text>
+          )}
+        </View>
+
+        <View className="flex-row self-start rounded-2xl bg-black/60 p-1">
+          {(["outdoor", "indoor"] as const).map((s) => (
+            <TouchableOpacity
+              key={s}
+              onPress={() => setScene(s)}
+              className={`rounded-xl px-4 py-1.5 ${scene === s ? "bg-blue-500" : ""}`}
+            >
+              <Text className="text-white font-semibold">{s === "outdoor" ? "Улица" : "Помещение"}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        {error && status !== "streaming" && (
+          <Text className="rounded-xl bg-red-900/80 px-3 py-2 text-white text-xs">{error}</Text>
+        )}
+      </View>
+
+      {/* Ближайшее препятствие + стоп */}
+      <View className="absolute bottom-10 w-full items-center gap-4 px-6">
+        <View
+          className="w-full rounded-3xl bg-black/70 px-5 py-4"
+          accessibilityLiveRegion="polite"
+          accessible
+        >
+          {nearest ? (
+            <Text className="text-2xl font-black text-center" style={{ color: URGENCY_COLOR[nearest.urgency] }}>
+              {describe(nearest)}
+            </Text>
+          ) : (
+            <Text className="text-zinc-300 text-xl font-bold text-center">
+              {status === "streaming" ? "Препятствий не видно" : "Ожидание сервера"}
+            </Text>
+          )}
+          {obstacles.length > 1 && (
+            <Text className="text-zinc-400 text-sm text-center mt-1">ещё объектов: {obstacles.length - 1}</Text>
+          )}
+        </View>
+
         <TouchableOpacity
-          className="bg-red-500 py-6 w-4/5 rounded-3xl items-center active:bg-red-600"
+          className="bg-red-500 py-5 w-4/5 rounded-3xl items-center active:bg-red-600"
           onPress={onStop}
         >
-          <Text className="text-white text-2xl font-black uppercase text-center">
-            Остановить
-          </Text>
+          <Text className="text-white text-2xl font-black uppercase text-center">Остановить</Text>
         </TouchableOpacity>
       </View>
     </View>

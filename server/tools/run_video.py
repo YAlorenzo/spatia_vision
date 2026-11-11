@@ -24,7 +24,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from spatia import Pipeline, Settings  # noqa: E402
+from spatia import Engine, Settings  # noqa: E402
 from spatia.config import DEPTH_MODELS, SERVER_DIR  # noqa: E402
 from spatia.schemas import FrameDebug  # noqa: E402
 
@@ -105,8 +105,8 @@ def main() -> None:
     if args.live:
         args.show, args.no_video = True, True
 
-    pipeline = Pipeline(settings)
-    label = pipeline.depth.name
+    session = Engine(settings).new_session()
+    label = session.depth.name
     is_webcam = args.video.isdigit()  # --video 0 = веб-камера ноутбука
     cap = cv2.VideoCapture(int(args.video) if is_webcam else args.video)
     if not cap.isOpened():
@@ -134,7 +134,7 @@ def main() -> None:
         src_pos += 1
         if not ok or (args.max_frames and i >= args.max_frames):
             break
-        result, dbg = pipeline.process(frame)
+        obstacles, dbg = session.process(frame)
         if i >= 5:  # первые кадры — прогрев CUDA
             timings.append(dbg.timings_ms["total"])
         scales.append(dbg.depth_scale)
@@ -174,7 +174,7 @@ def main() -> None:
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
         if i % 50 == 0:
-            print(f"  кадр {src_pos}/{total if total > 0 else '?'}  {dbg.timings_ms['total']:.0f}ms  объектов: {len(result.obstacles)}")
+            print(f"  кадр {src_pos}/{total if total > 0 else '?'}  {dbg.timings_ms['total']:.0f}ms  объектов: {len(obstacles)}")
         i += 1
 
     cap.release()
@@ -210,7 +210,7 @@ def main() -> None:
 
     summary = {
         "video": args.video,
-        "depth_model": pipeline.depth.name,
+        "depth_model": session.depth.name,
         "frames": i,
         "ms_per_frame": round(statistics.mean(timings), 1) if timings else None,
         "fps": round(1000 / statistics.mean(timings), 1) if timings else None,

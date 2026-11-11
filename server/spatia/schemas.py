@@ -1,4 +1,4 @@
-"""Формат данных конвейера и ответа клиенту."""
+"""Внутренние структуры конвейера и препятствие в ответе клиенту."""
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -13,7 +13,7 @@ class Detection:
     track_id: int | None
     cls: str
     conf: float
-    box: tuple[int, int, int, int]  # x1, y1, x2, y2
+    box: tuple[int, int, int, int]  # x1, y1, x2, y2 (пиксели)
 
 
 @dataclass
@@ -50,8 +50,4 @@ class Obstacle(BaseModel):
     distance: float  # метры
     urgency: Urgency
     conf: float
-
-
-class FrameResult(BaseModel):
-    frame_id: int
-    obstacles: list[Obstacle]  # отсортированы: ближайшие первыми
+    box: tuple[float, float, float, float]  # x1, y1, x2, y2 в долях кадра (0..1)
