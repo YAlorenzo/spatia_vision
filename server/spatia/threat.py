@@ -31,10 +31,12 @@ class ThreatAssessor:
         self.own_speed: dict[str, float] = {}
         self.lateral_speed: dict[str, float] = {}
         self.moving_since: dict[str, tuple[float, float]] = {}  # (начало серии "едет", последний кадр)
+        self.present_since: dict[str, tuple[float, float]] = {}  # (начало серии "виден", последний кадр)
         self.seen: dict[str, float] = {}
 
     def reset(self) -> None:
         self.primary_key = None
+        self.present_since.clear()
         self.own_speed.clear()
         self.lateral_speed.clear()
         self.moving_since.clear()
@@ -103,11 +105,23 @@ class ThreatAssessor:
                 # Неподвижное в коридоре. Стоишь — всё равно предупреждаем (можешь пойти),
                 # идёшь — по реальной скорости. Для едущего решает только CPA выше.
                 ttc = o.forward_m / max(o.approach_mps, s.walk_speed_mps)
+            # Сколько объект уже виден подряд. Мелькнувшее на секунду (надпись или тень на асфальте,
+            # ошибка глубины) — не угроза. Исключение — то, что уже вплотную.
+            since, last = self.present_since.get(k, (t, -1e9))
+            self.present_since[k] = (since if t - last < s.presence_gap_s else t, t)
+            present_for = t - self.present_since[k][0]
+            need = s.confirm_obstacle_s if o.kind == "obstacle" else s.confirm_object_s
+            confirmed = present_for >= need or d <= s.instant_range_m
+            if not confirmed:
+                ttc = None
+
             o.ttc_s = None if ttc is None else round(ttc, 1)
             o.threat = ttc is not None and ttc < s.primary_max_ttc_s
             o.urgency = _urgency(o.ttc_s if o.threat else None, s)
-            o.alert = _alert(o, s, moving_for)
+            o.alert = _alert(o, s, moving_for) if confirmed else ("info" if o.kind != "obstacle" else "none")
 
+        for k in [k for k, (_, last) in self.present_since.items() if t - last > 3.0]:
+            self.present_since.pop(k, None)
         for k in [k for k, seen in self.seen.items() if t - seen > 3.0]:
             self.own_speed.pop(k, None)
             self.lateral_speed.pop(k, None)

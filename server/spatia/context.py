@@ -5,6 +5,7 @@
 Флаг включается, если условие держится context_enter_s, и выключается, только
 если пропало на context_exit_s — чтобы не мигал от кадра к кадру.
 """
+import cv2
 import numpy as np
 
 from .config import Settings
@@ -43,6 +44,7 @@ class SceneContext:
         self.flags: dict[GroupType, _Flag] = {"crowd": _Flag(), "parking": _Flag()}
         self.last: dict[GroupType, Group] = {}
         self.dark = _Flag()
+        self.blurry = _Flag()
 
     def reset(self) -> None:
         self.__init__(self.s)
@@ -78,4 +80,10 @@ class SceneContext:
         # Яркость по уменьшенному кадру — почти бесплатно
         if self.dark.update(float(gray[::8, ::8].mean()) < s.dark_mean_gray, t, 1.0, 1.0):
             hints.append("too_dark")
+        # Резкость (дисперсия лапласиана): размыто, запотело, закрыто пальцем, вплотную к
+        # однотонной стене — по такому кадру ничего надёжно не определить.
+        # Обычные кадры дают > 1500, сильно размытые < 150.
+        elif self.blurry.update(float(cv2.Laplacian(gray[::2, ::2], cv2.CV_32F).var()) < s.blur_min_sharpness,
+                                t, 1.5, 1.0):
+            hints.append("blurry")
         return groups, hints

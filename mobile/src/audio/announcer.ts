@@ -9,12 +9,14 @@ import { classLabel, groupRu, metersRu, warnReason, warnRu, whereRu } from "../c
  *   1. ОПАСНОСТЬ: что-то ЕДЕТ на тебя ("Осторожно! Машина слева"). Перебивает речь.
  *   2. Новая ГЛАВНАЯ опасность (primary): "Препятствие впереди, 3 метра".
  *   3. Главная опасность стала ближе (пересекла 3 м, 1.5 м): "Полтора метра".
- *   4. Обстановка: "Внимание, парковка…", "Толпа людей слева и впереди".
- *   5. Объекты alert=warn: едущая машина (даже далеко), человек идёт к тебе или стоит
+ *   4. Камера плохо видит (темно, размыто): "Остановитесь…" — каждые 8 с, пока не наладится.
+ *   5. Обстановка: "Внимание, парковка…" (повтор каждые 30 с, пока на парковке),
+ *      "Толпа людей слева и впереди".
+ *   6. Объекты alert=warn: едущая машина (даже далеко), человек идёт к тебе или стоит
  *      на пути, живое/транспорт сбоку рядом. Каждый — один раз (повтор через 15 с,
  *      или сразу, если изменилась причина: стоял сбоку -> пошёл к тебе).
  *      В толпе люди по одному не озвучиваются; на парковке — стоящие машины.
- *   6. Советы: "Поднимите телефон выше", "Слишком темно".
+ *   7. Советы: "Поднимите телефон выше".
  * Пока голос говорит, фразы не копятся в очередь — каждый ответ сервера выбирается
  * заново самое важное из актуального.
  */
@@ -25,9 +27,9 @@ const SAME_PRIMARY_MS = 6000; // та же главная опасность в�
 const BANDS_M = [3, 1.5]; // пороги, при пересечении которых озвучиваем приближение
 const WARN_REPEAT_MS = 15000; // тот же объект по той же причине
 const CROWD_REPEAT_MS = 20000;
-const PARKING_REPEAT_MS = 60000;
+const PARKING_REPEAT_MS = 30000; // всё ещё на парковке — напоминаем
 const TILT_REPEAT_MS = 10000;
-const DARK_REPEAT_MS = 30000;
+const UNCLEAR_REPEAT_MS = 8000; // камера плохо видит — просим остановиться
 const GAP_MS = 700; // пауза между обычными фразами, чтобы не сливались
 
 export interface Utterance {
@@ -118,7 +120,20 @@ export class AnnouncerLogic {
       }
     }
 
-    // 4. Обстановка: парковка, толпа
+    // 4. Камера плохо видит — по такому кадру ничего надёжно не определить: просим остановиться
+    const unclear = hints.includes("too_dark") ? "dark" : hints.includes("blurry") ? "blurry" : null;
+    if (unclear && now - (this.adviceAt.get("unclear") ?? -Infinity) > UNCLEAR_REPEAT_MS) {
+      this.adviceAt.set("unclear", now);
+      return this.say(
+        unclear === "dark"
+          ? "Остановитесь. Слишком темно, камера плохо видит"
+          : "Остановитесь. Изображение размыто, протрите камеру или держите телефон ровнее",
+        false,
+        now,
+      );
+    }
+
+    // 5. Обстановка: парковка, толпа
     for (const g of groups) {
       const zones = g.zones.join(",");
       const prev = this.groupSaid.get(g.type);
@@ -127,7 +142,8 @@ export class AnnouncerLogic {
       const changed = g.type === "crowd" && prev != null && prev.zones !== zones;
       if (!prev || changed || now - prev.at > repeat) {
         this.groupSaid.set(g.type, { zones, at: now });
-        return this.say(groupRu(g), false, now);
+        const again = prev != null && !changed;
+        return this.say(again && g.type === "parking" ? "Вы всё ещё на парковке, осторожно" : groupRu(g), false, now);
       }
     }
     for (const t of ["crowd", "parking"]) {
@@ -135,7 +151,7 @@ export class AnnouncerLogic {
       if (!groups.some((g) => g.type === t)) this.groupSaid.delete(t);
     }
 
-    // 5. Объекты, о которых надо сказать голосом
+    // 6. Объекты, о которых надо сказать голосом
     const crowd = groups.some((g) => g.type === "crowd");
     const parking = groups.some((g) => g.type === "parking");
     const warns = obstacles
@@ -153,17 +169,13 @@ export class AnnouncerLogic {
       return this.say(warnRu(o), false, now);
     }
 
-    // 6. Советы
+    // 7. Советы
     if (tilt) {
       const text = tilt === "raise" ? "Поднимите телефон выше" : "Опустите телефон, камера смотрит вверх";
       if (now - (this.adviceAt.get(tilt) ?? -Infinity) > TILT_REPEAT_MS) {
         this.adviceAt.set(tilt, now);
         return this.say(text, false, now);
       }
-    }
-    if (hints.includes("too_dark") && now - (this.adviceAt.get("dark") ?? -Infinity) > DARK_REPEAT_MS) {
-      this.adviceAt.set("dark", now);
-      return this.say("Слишком темно, камера плохо видит", false, now);
     }
     return null;
   }
@@ -220,6 +232,18 @@ class Announcer {
       this.logic.lastEndAt = Date.now();
       this.onSpeakingChange?.(false);
     };
+    synth.speak(utt);
+  }
+
+  /** Сказать сразу, мимо логики выбора (например, "нет связи" — ответов сервера нет вовсе). */
+  sayNow(text: string) {
+    if (!this.supported || !this.enabled) return;
+    const synth = window.speechSynthesis;
+    synth.cancel();
+    const utt = new SpeechSynthesisUtterance(text);
+    utt.lang = "ru-RU";
+    if (this.voice) utt.voice = this.voice;
+    utt.rate = 1.25;
     synth.speak(utt);
   }
 

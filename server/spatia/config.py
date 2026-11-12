@@ -58,8 +58,14 @@ class Settings:
     device: str = "cuda"  # "cuda" | "cpu" (если CUDA недоступна — автоматически cpu)
 
     # --- Детекция ---
-    yolo_weights: Path = SERVER_DIR / "yolo11n.pt"
-    yolo_conf: float = 0.45
+    # YOLO11s: на RTX 3050 Ti так же быстр, как 11n (~18 мс), но находит на 10-20% больше
+    yolo_weights: Path = SERVER_DIR / "yolo11s.pt"
+    # Детектор отдаёт всё от этого порога: слабые рамки трекер использует, чтобы не терять
+    # уже известные объекты (люди в толпе закрывают друг друга)
+    yolo_conf: float = 0.25
+    # Новый объект появляется, только если хоть раз увиден с такой уверенностью
+    confirm_conf: dict[str, float] = field(default_factory=lambda: {"person": 0.35})
+    confirm_conf_default: float = 0.45
     yolo_imgsz: int = 640
     use_tracking: bool = True  # ByteTrack: стабильные ID объектов между кадрами
     max_frame_side: int = 960  # кадры с длинной стороной больше — ужимаем (защита от огромных фото)
@@ -134,15 +140,22 @@ class Settings:
     # Тревога "едет НА тебя" (danger): только ближе этого и если "едет" держится столько
     danger_max_range_m: float = 15.0
     danger_confirm_s: float = 0.3
+    # Объект должен быть виден подряд столько, чтобы стать угрозой (мелькание — надпись
+    # на асфальте, тень, ошибка глубины — игнорируем). Ближе instant_range_m — сразу.
+    confirm_obstacle_s: float = 1.5  # препятствие по глубине
+    confirm_object_s: float = 0.5  # человек / машина / животное
+    presence_gap_s: float = 0.4  # пропуск кадров короче — серия не обрывается
+    instant_range_m: float = 1.0
 
     # --- Обстановка (толпа, парковка) ---
-    crowd_range_m: float = 15.0
+    crowd_range_m: float = 20.0
     crowd_min_people: int = 4  # столько людей рядом — толпа
     parking_range_m: float = 20.0
     parking_min_vehicles: int = 3  # столько стоящих машин рядом — парковка
     context_enter_s: float = 1.0  # условие держится столько — включаем флаг
     context_exit_s: float = 4.0  # условие пропало на столько — выключаем
     dark_mean_gray: float = 35.0  # средняя яркость кадра ниже — "слишком темно"
+    blur_min_sharpness: float = 150.0  # резкость кадра ниже — "неразборчиво" (обычно > 1500)
 
     # --- Движение ---
     motion_window_s: float = 1.0  # окно для оценки скорости сближения

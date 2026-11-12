@@ -14,7 +14,7 @@ Kind = Literal["person", "vehicle", "animal", "obstacle"]
 #   none   — фон (статичное сбоку): серым
 Alert = Literal["danger", "warn", "info", "none"]
 GroupType = Literal["crowd", "parking"]
-Hint = Literal["too_dark"]
+Hint = Literal["too_dark", "blurry"]
 
 
 @dataclass

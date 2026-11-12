@@ -6,7 +6,7 @@ import type { Scene } from "../api/protocol";
 import { getServerUrl } from "../api/serverUrl";
 import { StreamStatus, useServerStream } from "../api/useServerStream";
 import { ObstacleOverlay } from "../components/ObstacleOverlay";
-import { useAudioFeedback, useTiltAdvice } from "../audio/useAudioFeedback";
+import { useAudioFeedback, useConnectionWatchdog, useTiltAdvice } from "../audio/useAudioFeedback";
 import { describe, URGENCY_COLOR, zonesRu } from "../components/labels";
 
 // CameraView — сторонний компонент, NativeWind должен знать, что className -> style
@@ -50,13 +50,16 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
   const active = status === "streaming";
   useAudioFeedback({ obstacles, groups, hints, active, beeps, speech, vibration });
   const tilt = useTiltAdvice(active);
+  const connectionLost = useConnectionWatchdog(obstacles, speech);
 
   const primary = obstacles.find((o) => o.primary);
   const otherThreats = obstacles.filter((o) => o.threat && !o.primary).length;
   const notices = [
+    ...(connectionLost ? ["Нет связи — остановитесь"] : []),
+    ...(hints.includes("too_dark") ? ["Темно — остановитесь"] : []),
+    ...(hints.includes("blurry") ? ["Размыто — остановитесь"] : []),
     ...groups.map((g) => (g.type === "crowd" ? `Толпа ${zonesRu(g.zones)}` : "Парковка — осторожно")),
     ...(tilt === "raise" ? ["Поднимите телефон выше"] : tilt === "lower" ? ["Опустите телефон"] : []),
-    ...(hints.includes("too_dark") ? ["Слишком темно"] : []),
   ];
 
   return (

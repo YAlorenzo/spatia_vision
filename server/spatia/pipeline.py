@@ -58,7 +58,7 @@ class Session:
     def __init__(self, engine: Engine, scene: Scene | None = None, hfov_deg: float | None = None):
         self.engine = engine
         self.s = dataclasses.replace(engine.settings)
-        self.tracker = Tracker(engine.detector.names) if self.s.use_tracking else None
+        self.tracker = Tracker(engine.detector.names, self.s) if self.s.use_tracking else None
         self.smoother = dist.DistanceSmoother(self.s)
         self.calibrator = dist.DepthScaleCalibrator(self.s)
         self.free_space = FreeSpaceAnalyzer(self.s)

@@ -17,7 +17,7 @@ export type Kind = "person" | "vehicle" | "animal" | "obstacle";
  */
 export type Alert = "danger" | "warn" | "info" | "none";
 export type GroupType = "crowd" | "parking";
-export type Hint = "too_dark";
+export type Hint = "too_dark" | "blurry";
 
 /** Обстановка: толпа людей или парковка — одним сообщением вместо каждого объекта. */
 export interface Group {

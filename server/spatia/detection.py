@@ -41,30 +41,38 @@ class Detector:
                 box=tuple(int(v) for v in b),
             )
             for b, c, p in zip(boxes.xyxy, boxes.cls, boxes.conf)
+            # без трекера слабые рамки не к чему привязать — только уверенные
+            if p >= self.s.confirm_conf.get(self.names[int(c)], self.s.confirm_conf_default)
         ]
 
 
 class Tracker:
     """ByteTrack: стабильные ID объектов между кадрами. Состояние — на сессию."""
 
-    def __init__(self, names: dict[int, str]):
+    def __init__(self, names: dict[int, str], settings: Settings):
         cfg = IterableSimpleNamespace(**YAML.load(check_yaml("bytetrack.yaml")))
         self.tracker = BYTETracker(cfg)
         self.names = names
+        self.s = settings
+        self.confirmed: set[int] = set()  # треки, хоть раз увиденные уверенно
 
     def reset(self) -> None:
         self.tracker.reset()
+        self.confirmed.clear()
 
     def update(self, boxes, frame_bgr: np.ndarray) -> list[Detection]:
         if len(boxes) == 0:
             return []
         tracks = self.tracker.update(boxes, frame_bgr)  # [x1,y1,x2,y2,id,score,cls,idx]
-        return [
-            Detection(
-                track_id=int(t[4]),
-                cls=self.names[int(t[6])],
-                conf=float(t[5]),
-                box=tuple(int(v) for v in t[:4]),
-            )
-            for t in tracks
-        ]
+        out = []
+        for t in tracks:
+            tid, cls, conf = int(t[4]), self.names[int(t[6])], float(t[5])
+            if tid not in self.confirmed:
+                if conf < self.s.confirm_conf.get(cls, self.s.confirm_conf_default):
+                    continue  # слабая рамка нового объекта — скорее ложная, ждём уверенную
+                self.confirmed.add(tid)
+            out.append(Detection(track_id=tid, cls=cls, conf=conf, box=tuple(int(v) for v in t[:4])))
+        if len(self.confirmed) > 5000:  # id растут бесконечно — чистим старые
+            alive = {int(t[4]) for t in tracks}
+            self.confirmed &= alive
+        return out
