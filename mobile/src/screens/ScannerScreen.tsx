@@ -6,8 +6,8 @@ import type { Scene } from "../api/protocol";
 import { getServerUrl } from "../api/serverUrl";
 import { StreamStatus, useServerStream } from "../api/useServerStream";
 import { ObstacleOverlay } from "../components/ObstacleOverlay";
-import { useAudioFeedback } from "../audio/useAudioFeedback";
-import { describe, URGENCY_COLOR } from "../components/labels";
+import { useAudioFeedback, useTiltAdvice } from "../audio/useAudioFeedback";
+import { describe, URGENCY_COLOR, zonesRu } from "../components/labels";
 
 // CameraView — сторонний компонент, NativeWind должен знать, что className -> style
 cssInterop(CameraView, { className: "style" });
@@ -36,9 +36,10 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
   const [scene, setScene] = useState<Scene>("outdoor");
   const [beeps, setBeeps] = useState(true);
   const [speech, setSpeech] = useState(true);
+  const [vibration, setVibration] = useState(true);
   const url = useMemo(() => getServerUrl(), []);
 
-  const { status, obstacles, stats, frameSize, error } = useServerStream({
+  const { status, obstacles, groups, hints, stats, frameSize, error } = useServerStream({
     url,
     cameraRef,
     cameraReady,
@@ -46,10 +47,17 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
     scene,
   });
 
-  useAudioFeedback({ obstacles, active: status === "streaming", beeps, speech });
+  const active = status === "streaming";
+  useAudioFeedback({ obstacles, groups, hints, active, beeps, speech, vibration });
+  const tilt = useTiltAdvice(active);
 
   const primary = obstacles.find((o) => o.primary);
   const otherThreats = obstacles.filter((o) => o.threat && !o.primary).length;
+  const notices = [
+    ...groups.map((g) => (g.type === "crowd" ? `Толпа ${zonesRu(g.zones)}` : "Парковка — осторожно")),
+    ...(tilt === "raise" ? ["Поднимите телефон выше"] : tilt === "lower" ? ["Опустите телефон"] : []),
+    ...(hints.includes("too_dark") ? ["Слишком темно"] : []),
+  ];
 
   return (
     <View className="flex-1 bg-zinc-950">
@@ -94,6 +102,7 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
             {[
               { label: "Звук", on: beeps, toggle: () => setBeeps((v) => !v) },
               { label: "Голос", on: speech, toggle: () => setSpeech((v) => !v) },
+              { label: "Вибро", on: vibration, toggle: () => setVibration((v) => !v) },
             ].map((t) => (
               <TouchableOpacity
                 key={t.label}
@@ -107,6 +116,16 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
             ))}
           </View>
         </View>
+
+        {notices.length > 0 && (
+          <View className="flex-row flex-wrap gap-2">
+            {notices.map((n) => (
+              <Text key={n} className="rounded-xl bg-amber-500/90 px-3 py-1.5 text-black font-bold">
+                {n}
+              </Text>
+            ))}
+          </View>
+        )}
 
         {error && status !== "streaming" && (
           <Text className="rounded-xl bg-red-900/80 px-3 py-2 text-white text-xs">{error}</Text>

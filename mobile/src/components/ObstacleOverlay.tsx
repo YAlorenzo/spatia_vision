@@ -2,7 +2,7 @@ import { useState } from "react";
 import { LayoutChangeEvent, Text, View } from "react-native";
 import type { Obstacle } from "../api/protocol";
 import type { FrameSize } from "../api/useServerStream";
-import { classLabel, URGENCY_COLOR } from "./labels";
+import { alertColor, classLabel } from "./labels";
 
 interface Props {
   obstacles: Obstacle[];
@@ -37,8 +37,10 @@ export const ObstacleOverlay = ({ obstacles, frameSize }: Props) => {
           const [x1, x2] = frameSize!.mirrored ? [1 - bx2, 1 - bx1] : [bx1, bx2];
           const fw = frameSize!.width * scale;
           const fh = frameSize!.height * scale;
-          // Не угрозы — серые и полупрозрачные; главная опасность — толстая рамка
-          const color = o.threat ? URGENCY_COLOR[o.urgency] : "#a1a1aa";
+          // Фон (статичное сбоку) — серый и полупрозрачный; люди/машины рядом — всегда цветом;
+          // главная опасность — толстая рамка
+          const color = alertColor(o);
+          const background = o.alert === "none";
           return (
             <View
               key={`${o.kind}:${o.id ?? i}`}
@@ -50,7 +52,7 @@ export const ObstacleOverlay = ({ obstacles, frameSize }: Props) => {
                 height: (y2 - y1) * fh,
                 borderColor: color,
                 borderWidth: o.primary ? 4 : 2,
-                opacity: o.threat ? 1 : 0.4,
+                opacity: background ? 0.4 : 1,
                 // препятствия по глубине (без класса) — пунктиром и с заливкой
                 borderStyle: o.kind === "obstacle" ? "dashed" : "solid",
                 backgroundColor: o.kind === "obstacle" ? `${color}22` : "transparent",

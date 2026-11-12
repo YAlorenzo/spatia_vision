@@ -21,7 +21,7 @@ from pydantic import ValidationError
 from spatia import Engine, Session, Settings
 from spatia.config import SERVER_DIR
 from spatia.protocol import Config, Error, Hello, Ready, Result, parse_frame
-from spatia.schemas import Obstacle
+from spatia.schemas import Group, Obstacle
 
 WEB_DIST = SERVER_DIR.parent / "mobile" / "dist"
 HELLO_TIMEOUT_S = 10
@@ -66,7 +66,7 @@ class FrameSlot:
         return item
 
 
-def process_jpeg(session: Session, jpeg: bytes) -> list[Obstacle] | None:
+def process_jpeg(session: Session, jpeg: bytes) -> tuple[list[Obstacle], list[Group], list[str]] | None:
     frame = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
     if frame is None:
         return None
@@ -79,8 +79,9 @@ def process_jpeg(session: Session, jpeg: bytes) -> list[Obstacle] | None:
         for o in dbg.objects:
             if o.moving and o.threat:
                 print(f"[moving] {o.detection.cls}#{o.detection.track_id} d={o.distance.smoothed_m:.1f} "
-                      f"approach={o.approach_mps:+.2f} own={o.own_speed_mps:+.2f} ego={dbg.ego_speed:+.2f}")
-    return obstacles
+                      f"approach={o.approach_mps:+.2f} own={o.own_speed_mps:+.2f} "
+                      f"side={o.lateral_speed_mps:+.2f} ego={dbg.ego_speed:+.2f}")
+    return obstacles, dbg.groups, list(dbg.hints)
 
 
 async def send(ws: WebSocket, msg) -> None:
@@ -93,17 +94,20 @@ async def process_loop(ws: WebSocket, session: Session, slot: FrameSlot) -> None
         seq, jpeg = await slot.take()
         t0 = loop.time()
         try:
-            obstacles = await loop.run_in_executor(gpu, process_jpeg, session, jpeg)
+            out = await loop.run_in_executor(gpu, process_jpeg, session, jpeg)
         except Exception as e:  # ошибка одного кадра не должна убивать сессию
             print(f"[server] ошибка обработки кадра {seq}: {e!r}")
             await send(ws, Error(message=f"ошибка обработки кадра {seq}"))
             continue
-        if obstacles is None:
+        if out is None:
             await send(ws, Error(message=f"кадр {seq}: не удалось декодировать JPEG"))
             continue
+        obstacles, groups, hints = out
         await send(ws, Result(
             seq=seq,
             obstacles=obstacles,
+            groups=groups,
+            hints=hints,  # type: ignore[arg-type]
             server_ms=round((loop.time() - t0) * 1000, 1),
             dropped=slot.dropped,
         ))

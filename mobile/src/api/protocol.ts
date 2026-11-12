@@ -8,6 +8,24 @@ export type Zone = "left" | "center" | "right";
 export type Urgency = "high" | "medium" | "low";
 /** person/vehicle/animal — по детектору; obstacle — по карте глубины, без класса */
 export type Kind = "person" | "vehicle" | "animal" | "obstacle";
+/**
+ * Класс опасности:
+ *   danger — угроза (главная или едет на тебя): звук;
+ *   warn   — сказать голосом (едущая машина, человек идёт к тебе / на пути, живое сбоку);
+ *   info   — показать цветом, молчать (люди/машины ближе 13 м);
+ *   none   — фон, серым (статичное сбоку).
+ */
+export type Alert = "danger" | "warn" | "info" | "none";
+export type GroupType = "crowd" | "parking";
+export type Hint = "too_dark";
+
+/** Обстановка: толпа людей или парковка — одним сообщением вместо каждого объекта. */
+export interface Group {
+  type: GroupType;
+  zones: Zone[]; // center = впереди
+  count: number;
+  distance: number;
+}
 
 export interface Obstacle {
   id: number | null; // для obstacle: -1/-2/-3 = слева / в коридоре / справа
@@ -25,6 +43,7 @@ export interface Obstacle {
   moving: boolean; // движется сам
   threat: boolean; // в коридоре или едет на пользователя
   primary: boolean; // ГЛАВНАЯ опасность — звук только о ней
+  alert: Alert;
   conf: number;
   box: [number, number, number, number]; // x1, y1, x2, y2 в долях кадра
 }
@@ -56,6 +75,8 @@ export interface ResultMessage {
   type: "result";
   seq: number;
   obstacles: Obstacle[];
+  groups?: Group[];
+  hints?: Hint[];
   server_ms: number;
   dropped: number;
 }

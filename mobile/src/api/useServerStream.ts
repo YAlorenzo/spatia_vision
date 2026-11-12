@@ -4,7 +4,9 @@ import type { CameraView } from "expo-camera";
 import {
   ConfigMessage,
   encodeFrame,
+  Group,
   HelloMessage,
+  Hint,
   Obstacle,
   PROTOCOL_VERSION,
   ResultMessage,
@@ -42,7 +44,14 @@ interface Options {
   hfov?: number;
 }
 
+export interface SceneState {
+  obstacles: Obstacle[];
+  groups: Group[];
+  hints: Hint[];
+}
+
 const EMPTY_STATS: StreamStats = { fps: 0, rttMs: 0, serverMs: 0, frameKb: 0 };
+const EMPTY_SCENE: SceneState = { obstacles: [], groups: [], hints: [] };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const ema = (prev: number, next: number) => (prev ? prev * 0.8 + next * 0.2 : next);
 
@@ -53,7 +62,8 @@ const ema = (prev: number, next: number) => (prev ? prev * 0.8 + next * 0.2 : ne
  */
 export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, hfov }: Options) {
   const [status, setStatus] = useState<StreamStatus>("connecting");
-  const [obstacles, setObstacles] = useState<Obstacle[]>([]);
+  // Всё из одного ответа сервера — одним состоянием, чтобы звук и экран видели согласованный кадр
+  const [sceneState, setScene] = useState<SceneState>(EMPTY_SCENE);
   const [stats, setStats] = useState<StreamStats>(EMPTY_STATS);
   const [frameSize, setFrameSize] = useState<FrameSize | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -160,7 +170,7 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
           frameKb: ema(s.frameKb, frame.byteLength / 1024),
         };
         lastLoop = now;
-        setObstacles(result.obstacles);
+        setScene({ obstacles: result.obstacles, groups: result.groups ?? [], hints: result.hints ?? [] });
         setStats(s);
       }
     };
@@ -206,7 +216,7 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
         if (wsRef.current === ws) wsRef.current = null;
         if (!alive) return;
         setStatus("reconnecting");
-        setObstacles([]);
+        setScene(EMPTY_SCENE);
         setTimeout(connect, reconnectDelay);
         reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_MS);
       };
@@ -220,9 +230,17 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
       wsRef.current?.close();
       wsRef.current = null;
       setStatus("connecting"); // к следующему запуску
-      setObstacles([]);
+      setScene(EMPTY_SCENE);
     };
   }, [url, enabled, cameraRef]);
 
-  return { status: enabled ? status : ("stopped" as StreamStatus), obstacles, stats, frameSize, error };
+  return {
+    status: enabled ? status : ("stopped" as StreamStatus),
+    obstacles: sceneState.obstacles,
+    groups: sceneState.groups,
+    hints: sceneState.hints,
+    stats,
+    frameSize,
+    error,
+  };
 }

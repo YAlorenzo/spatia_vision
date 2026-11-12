@@ -10,12 +10,17 @@
 
 Сервер -> клиент
   text   {"type":"ready", "v":1, "session":"…", "max_width":640}
-  text   {"type":"result", "seq":42, "obstacles":[…], "server_ms":65.3, "dropped":0}
+  text   {"type":"result", "seq":42, "obstacles":[…], "groups":[…], "hints":[…],
+          "server_ms":65.3, "dropped":0}
          obstacle: {"id":6, "kind":"person|vehicle|animal|obstacle", "cls":"person",
                     "zone":"left|center|right", "pan":-0.4, "bearing":-12.5, "distance":3.2,
                     "in_path":true, "approach":1.1, "own_speed":0.1, "ttc":2.9,
                     "moving":false, "threat":true, "primary":true,
+                    "alert":"danger|warn|info|none",
                     "urgency":"high|medium|low", "conf":0.8, "box":[x1,y1,x2,y2]}
+         alert: danger — угроза (звук); warn — сказать голосом; info — показать; none — фон.
+         group: {"type":"crowd|parking", "zones":["left","center"], "count":5, "distance":4.2}
+         hints: ["too_dark"]
          Список отсортирован: сначала primary (главная опасность), потом угрозы, потом остальное.
          zone=center — коридор движения (в метрах), а не средняя треть кадра.
          kind=obstacle — найдено по карте глубины без класса (дерево, столб, стена...),
@@ -28,7 +33,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from .config import Scene
-from .schemas import Obstacle
+from .schemas import Group, Hint, Obstacle
 
 PROTOCOL_VERSION = 1
 FRAME_HEADER = struct.Struct(">I")  # seq: uint32 big-endian
@@ -60,6 +65,8 @@ class Result(BaseModel):
     type: Literal["result"] = "result"
     seq: int
     obstacles: list[Obstacle]
+    groups: list[Group] = []  # толпа / парковка
+    hints: list[Hint] = []  # подсказки по кадру: too_dark
     server_ms: float
     dropped: int  # сколько кадров сервер выбросил как устаревшие (за сессию)
 

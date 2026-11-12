@@ -1,4 +1,4 @@
-import type { Obstacle, Urgency } from "../api/protocol";
+import type { Group, Obstacle, Urgency, Zone } from "../api/protocol";
 
 const CLASS_RU: Record<string, string> = {
   person: "Человек",
@@ -43,4 +43,51 @@ export const whereRu = (o: Obstacle) => (o.in_path ? "впереди" : o.bearin
 /** Короткая фраза для экрана: "Препятствие впереди, 3 метра". */
 export function describe(o: Obstacle): string {
   return `${classLabel(o.cls)}${o.moving ? " едет" : ""} ${whereRu(o)}, ${metersRu(o.distance)}`;
+}
+
+/** Цвет рамки по классу опасности: danger — по срочности, warn — оранжевый, info — голубой, фон — серый. */
+export function alertColor(o: Obstacle): string {
+  if (o.alert === "danger") return URGENCY_COLOR[o.urgency];
+  if (o.alert === "warn") return "#fb923c";
+  if (o.alert === "info") return "#38bdf8";
+  return "#a1a1aa";
+}
+
+const ZONE_RU: Record<Zone, string> = { left: "слева", center: "впереди", right: "справа" };
+
+/** ["left","center"] -> "слева и впереди" */
+export function zonesRu(zones: Zone[]): string {
+  const words = zones.map((z) => ZONE_RU[z]);
+  return words.length <= 1 ? (words[0] ?? "") : `${words.slice(0, -1).join(", ")} и ${words[words.length - 1]}`;
+}
+
+/** Почему объект озвучивается (для фразы и для антиспама). */
+export type WarnReason = "moving" | "coming" | "path" | "side";
+
+export function warnReason(o: Obstacle): WarnReason {
+  if (o.moving) return "moving";
+  if (o.own_speed > 0.5) return "coming"; // сам идёт к тебе
+  if (o.in_path) return "path";
+  return "side";
+}
+
+/** Голосом для alert=warn: "Едет машина слева, 15 метров", "Человек идёт к вам справа, 6 метров". */
+export function warnRu(o: Obstacle): string {
+  const cls = classLabel(o.cls);
+  const where = whereRu(o);
+  const m = metersRu(o.distance);
+  switch (warnReason(o)) {
+    case "moving":
+      return o.kind === "vehicle" ? `Едет ${cls.toLowerCase()} ${where}, ${m}` : `${cls} быстро движется ${where}, ${m}`;
+    case "coming":
+      return `${cls} идёт к вам ${where}, ${m}`;
+    default:
+      return `${cls} ${where}, ${m}`;
+  }
+}
+
+/** Фраза об обстановке. */
+export function groupRu(g: Group): string {
+  if (g.type === "crowd") return `Толпа людей ${zonesRu(g.zones)}`;
+  return "Внимание, парковка. Зона повышенной опасности";
 }

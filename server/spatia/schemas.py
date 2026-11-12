@@ -7,6 +7,14 @@ from pydantic import BaseModel
 Zone = Literal["left", "center", "right"]
 Urgency = Literal["high", "medium", "low"]
 Kind = Literal["person", "vehicle", "animal", "obstacle"]
+# Класс опасности объекта:
+#   danger — угроза (главная или едет на тебя): звук/тревога
+#   warn   — сказать голосом (едущая машина, человек идёт к тебе / на пути, живое сбоку)
+#   info   — показать цветом, молчать (люди/машины ближе 13 м)
+#   none   — фон (статичное сбоку): серым
+Alert = Literal["danger", "warn", "info", "none"]
+GroupType = Literal["crowd", "parking"]
+Hint = Literal["too_dark"]
 
 
 @dataclass
@@ -46,6 +54,16 @@ class TrackedObject:
     moving: bool = False  # движется сам
     threat: bool = False
     primary: bool = False  # главная опасность кадра
+    alert: Alert = "none"
+    lateral_speed_mps: float = 0.0  # собственная скорость поперёк (сглаженная), для "едет мимо"
+
+
+class Group(BaseModel):
+    """Обстановка вокруг: толпа людей или парковка — одним сообщением вместо каждого объекта."""
+    type: GroupType
+    zones: list[Zone]  # где: left/center/right (center = впереди)
+    count: int
+    distance: float  # до ближайшего, м
 
 
 @dataclass
@@ -56,6 +74,8 @@ class FrameDebug:
     depth_scale: float = 1.0  # текущая поправка масштаба глубины
     free_space: "object | None" = None  # free_space.FreeSpaceDebug
     ego_speed: float = 0.0  # оценка скорости пользователя вперёд, м/с
+    groups: list[Group] = field(default_factory=list)
+    hints: list[Hint] = field(default_factory=list)
     timings_ms: dict[str, float] = field(default_factory=dict)
 
 
@@ -75,5 +95,6 @@ class Obstacle(BaseModel):
     moving: bool  # движется сам
     threat: bool  # опасно: в коридоре или едет на пользователя
     primary: bool  # ГЛАВНАЯ опасность — только о ней звук; остальное приглушается
+    alert: Alert  # danger / warn (голосом) / info (цветом) / none (фон)
     conf: float
     box: tuple[float, float, float, float]  # x1, y1, x2, y2 в долях кадра (0..1)

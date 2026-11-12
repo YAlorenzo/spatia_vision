@@ -42,6 +42,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--name", default=None, help="Имя папки в output/")
     p.add_argument("--show", action="store_true")
     p.add_argument("--no-video", action="store_true", help="Не писать annotated.mp4")
+    p.add_argument("--dump", action="store_true",
+                   help="Писать ответы сервера по кадрам в frames.jsonl (для проверки звука/голоса)")
     p.add_argument("--live", action="store_true",
                    help="Реальное время: окно + пропуск кадров, которые не успели обработать "
                         "(как с настоящей камерой). Файл не пишется.")
@@ -81,7 +83,10 @@ def annotate(frame: np.ndarray, dbg: FrameDebug, label: str) -> np.ndarray:
         cv2.line(out, (x, 0), (x, h), (255, 255, 255), 1)
     for o in sorted(dbg.objects, key=lambda o: o.primary):  # главную рисуем последней, поверх
         x1, y1, x2, y2 = o.detection.box
-        color = URGENCY_COLORS[o.urgency] if o.threat else (150, 150, 150)  # не угрозы — серым
+        # danger — по срочности, warn (голосом) — оранжевый, info — голубой, фон — серый
+        color = (URGENCY_COLORS[o.urgency] if o.alert == "danger" else
+                 (0, 140, 255) if o.alert == "warn" else
+                 (250, 190, 60) if o.alert == "info" else (150, 150, 150))
         cv2.rectangle(out, (x1, y1), (x2, y2), color, 2 if o.kind != "obstacle" else 3)
         if o.primary:
             cv2.rectangle(out, (x1 - 3, y1 - 3), (x2 + 3, y2 + 3), (255, 255, 255), 2)
@@ -109,6 +114,9 @@ def annotate(frame: np.ndarray, dbg: FrameDebug, label: str) -> np.ndarray:
             hud += " (prior)"
     hud += f" | me {dbg.ego_speed:+.1f}m/s"
     _text(out, hud, (10, h - 12), (255, 255, 255), 0.55)
+    flags = [f"{g.type.upper()} {'/'.join(g.zones)} x{g.count}" for g in dbg.groups] + [x.upper() for x in dbg.hints]
+    if flags:
+        _text(out, " | ".join(flags), (10, 22), (0, 220, 255), 0.7)
     return out
 
 
@@ -154,6 +162,7 @@ def main() -> None:
     scales: list[float] = []
     per_track: dict[int, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
 
+    dump = open(out_dir / "frames.jsonl", "w", encoding="utf-8") if args.dump else None
     i = 0
     while True:
         if skip_frames:
@@ -167,7 +176,15 @@ def main() -> None:
         if args.width and max(frame.shape[:2]) > args.width:  # как телефон: длинная сторона ~640px
             k = args.width / max(frame.shape[:2])
             frame = cv2.resize(frame, (round(frame.shape[1] * k), round(frame.shape[0] * k)), interpolation=cv2.INTER_AREA)
-        obstacles, dbg = session.process(frame, timestamp=None if is_webcam else src_pos / fps_in)
+        t_video = time.perf_counter() - t_start if is_webcam else src_pos / fps_in
+        obstacles, dbg = session.process(frame, timestamp=None if is_webcam else t_video)
+        if dump is not None:
+            dump.write(json.dumps({
+                "t": round(t_video, 3),
+                "obstacles": [o.model_dump() for o in obstacles],
+                "groups": [g.model_dump() for g in dbg.groups],
+                "hints": list(dbg.hints),
+            }, ensure_ascii=False) + "\n")
         if i >= 5:  # первые кадры — прогрев CUDA
             timings.append(dbg.timings_ms["total"])
         scales.append(dbg.depth_scale)
@@ -194,6 +211,9 @@ def main() -> None:
                 "own_speed_mps": o.own_speed_mps,
                 "threat": o.threat,
                 "primary": o.primary,
+                "alert": o.alert,
+                "lateral_mps": o.lateral_speed_mps,
+                "groups": ";".join(f"{g.type}:{'/'.join(g.zones)}" for g in dbg.groups),
                 "ego_mps": round(dbg.ego_speed, 2),
             })
             if o.detection.track_id is not None:
@@ -220,6 +240,8 @@ def main() -> None:
         i += 1
 
     cap.release()
+    if dump is not None:
+        dump.close()
     if writer is not None:
         writer.release()
     cv2.destroyAllWindows()

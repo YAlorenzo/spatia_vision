@@ -20,6 +20,8 @@ const SLOW_TTC_S = 7; // при таком времени до столкнов�
 const SOLID_TTC_S = 0.9; // ближе — непрерывный тон
 const SOLID_DIST_M = 0.8;
 const ALARM_INTERVAL_S = 0.9;
+const MASTER_GAIN = 1.25; // общая громкость сигналов
+const DUCK_GAIN = 0.5; // пока говорит голос
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
@@ -69,7 +71,7 @@ class SpatialAudio {
     // Компрессор поднимает громкость коротких сигналов и не даёт им клиппировать
     const comp = new DynamicsCompressorNode(ctx, { threshold: -24, knee: 6, ratio: 8, attack: 0.002, release: 0.1 });
     const master = ctx.createGain();
-    master.gain.value = 1.6;
+    master.gain.value = MASTER_GAIN;
     master.connect(comp).connect(ctx.destination);
     const mkPanner = () => {
       const p = new PannerNode(ctx, {
@@ -114,7 +116,7 @@ class SpatialAudio {
   /** Приглушить сигналы, пока говорит голос (но не до тишины — опасность важнее). */
   duck(on: boolean) {
     if (!this.ctx || !this.master) return;
-    this.master.gain.setTargetAtTime(on ? 0.6 : 1.6, this.ctx.currentTime, 0.04);
+    this.master.gain.setTargetAtTime(on ? DUCK_GAIN : MASTER_GAIN, this.ctx.currentTime, 0.04);
   }
 
   start() {

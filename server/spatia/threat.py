@@ -16,7 +16,7 @@
 import math
 
 from .config import Settings
-from .schemas import TrackedObject, Urgency
+from .schemas import Alert, TrackedObject, Urgency
 
 
 def _key(o: TrackedObject) -> str:
@@ -29,11 +29,15 @@ class ThreatAssessor:
         self.primary_key: str | None = None
         self.primary_since = 0.0
         self.own_speed: dict[str, float] = {}
+        self.lateral_speed: dict[str, float] = {}
+        self.moving_since: dict[str, tuple[float, float]] = {}  # (начало серии "едет", последний кадр)
         self.seen: dict[str, float] = {}
 
     def reset(self) -> None:
         self.primary_key = None
         self.own_speed.clear()
+        self.lateral_speed.clear()
+        self.moving_since.clear()
         self.seen.clear()
 
     def assess(self, objects: list[TrackedObject], ego_speed: float, focal: float, t: float) -> TrackedObject | None:
@@ -60,13 +64,29 @@ class ThreatAssessor:
                     raw = o.approach_mps - ego_speed * math.cos(b)
                     prev = self.own_speed.get(k, raw)
                     self.own_speed[k] = prev + s.own_speed_smoothing * (raw - prev)
+                    # Поперёк: ходьба пользователя прямо почти не даёт боковой скорости
+                    prev_x = self.lateral_speed.get(k, o.vx_mps)
+                    self.lateral_speed[k] = prev_x + s.own_speed_smoothing * (o.vx_mps - prev_x)
                     self.seen[k] = t
                 o.own_speed_mps = round(self.own_speed.get(k, 0.0), 2) if o.motion_valid else 0.0
-            o.moving = o.kind != "obstacle" and o.own_speed_mps > s.moving_speed_mps.get(o.kind, 1.5)
+                o.lateral_speed_mps = round(self.lateral_speed.get(k, 0.0), 2) if o.motion_valid else 0.0
+            o.moving = o.kind != "obstacle" and (
+                o.own_speed_mps > s.moving_speed_mps.get(o.kind, 1.5)
+                # машина едет поперёк (перекрёсток, выезд с парковки) — тоже едет
+                or (o.kind == "vehicle" and abs(o.lateral_speed_mps) > s.vehicle_lateral_moving_mps)
+            )
+            # Как долго объект подряд "едет": мелькание на 2-3 кадра вдали — шум глубины.
+            # Пропуск одного-двух кадров (< 0.3 с) серию не обрывает.
+            k = _key(o)
+            since, last = self.moving_since.get(k, (t, -1e9))
+            if o.moving:
+                self.moving_since[k] = (since if t - last < 0.3 else t, t)
+            moving_for = t - self.moving_since[k][0] if o.moving else 0.0
 
             ttc = None
             receding = o.motion_valid and o.approach_mps < -0.3  # удаляемся (например, отходишь назад)
-            if o.moving:
+            # "Едет на тебя" — только вблизи и устойчиво; дальше — просто "едет" (голосом, без тревоги)
+            if o.moving and o.distance.smoothed_m <= s.danger_max_range_m and moving_for >= s.danger_confirm_s:
                 # Едет/идёт: опасно, только если траектория пройдёт рядом с пользователем.
                 # Точка наибольшего сближения (CPA) по относительной скорости на земле.
                 x, z = math.copysign(o.lateral_m, o.bearing_deg), o.forward_m
@@ -86,9 +106,12 @@ class ThreatAssessor:
             o.ttc_s = None if ttc is None else round(ttc, 1)
             o.threat = ttc is not None and ttc < s.primary_max_ttc_s
             o.urgency = _urgency(o.ttc_s if o.threat else None, s)
+            o.alert = _alert(o, s, moving_for)
 
         for k in [k for k, seen in self.seen.items() if t - seen > 3.0]:
             self.own_speed.pop(k, None)
+            self.lateral_speed.pop(k, None)
+            self.moving_since.pop(k, None)
             self.seen.pop(k, None)
 
         threats = [o for o in objects if o.threat]
@@ -107,6 +130,28 @@ class ThreatAssessor:
         if best is not None:
             best.primary = True
         return best
+
+
+def _alert(o: TrackedObject, s: Settings, moving_for: float) -> Alert:
+    """Класс опасности: что озвучивать, что показывать, что убрать в фон."""
+    if o.threat:
+        return "danger"
+    if o.kind == "obstacle":
+        return "none"  # статичное не на пути — фон
+    d = o.distance.smoothed_m
+    if o.kind == "vehicle":
+        if o.moving and d <= s.vehicle_warn_range_m and moving_for >= s.moving_confirm_s:
+            return "warn"  # едущая машина — голосом, даже далеко (если едет устойчиво)
+    else:  # человек / животное
+        # Сам идёт к тебе (собственная скорость, без твоей ходьбы) — или стоит на твоём пути
+        coming = o.motion_valid and o.own_speed_mps > s.person_approach_mps
+        if d <= s.person_warn_range_m and (coming or o.in_path):
+            return "warn"
+    if not o.in_path and d <= s.side_warn_range_m:
+        return "warn"  # живое/транспорт сбоку рядом — хотя бы голосом
+    if d <= s.dynamic_info_range_m or o.moving:
+        return "info"
+    return "none"
 
 
 def _urgency(ttc: float | None, s: Settings) -> Urgency:

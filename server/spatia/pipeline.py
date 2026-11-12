@@ -19,6 +19,7 @@ import torch
 
 from . import distance as dist
 from .config import DEPTH_MODELS, GENERIC_CLASS, Scene, Settings
+from .context import SceneContext
 from .depth import DepthEstimator
 from .detection import Detector, Tracker
 from .free_space import ZONES, FreeSpaceAnalyzer
@@ -64,6 +65,7 @@ class Session:
         self.motion = MotionEstimator(self.s)
         self.ego = EgoMotion(self.s)
         self.threats = ThreatAssessor(self.s)
+        self.context = SceneContext(self.s)
         self.frame_idx = 0
         self.configure(scene=scene, hfov_deg=hfov_deg)
 
@@ -98,6 +100,11 @@ class Session:
         fh, fw = frame_bgr.shape[:2]
         raw = []
         for det in detections:
+            if det.cls == "person" and det.box[1] > fh * self.s.hand_min_top and det.box[3] > fh * 0.97:
+                # "Человек" только в нижней части кадра и упирается в край — это рука/нога
+                # снимающего: настоящий человек рядом занимал бы кадр по высоте.
+                # В free_space рамка остаётся — чтобы рука не стала "препятствием" по глубине.
+                continue
             depth_m = dist.sample_depth(depth_map, det.box, self.s)
             geom_m = dist.geometry_distance(det, (fh, fw), self.s) if self.s.use_geometry else None
             raw.append((det, depth_m, geom_m))
@@ -156,8 +163,9 @@ class Session:
             ))
 
         # Собственная скорость пользователя: одометрия по полу, запасной вариант — неподвижные препятствия
+        gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
         ego = self.ego.update(
-            cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY),
+            gray,
             t_frame,
             free_dbg.plane if free_dbg is not None else None,
             dist.focal_px(fw, fh, self.s.camera_fov_deg),
@@ -166,6 +174,8 @@ class Session:
         )
         # Главная опасность: коридор движения + то, что едет на пользователя
         self.threats.assess(objects, ego, dist.focal_px(fw, fh, self.s.camera_fov_deg), t_frame)
+        # Толпа / парковка / слишком темно
+        groups, hints = self.context.update(objects, gray, t_frame)
         objects.sort(key=lambda o: (not o.primary, not o.threat, o.distance.smoothed_m))
         t4 = time.perf_counter()
 
@@ -186,6 +196,7 @@ class Session:
                 moving=o.moving,
                 threat=o.threat,
                 primary=o.primary,
+                alert=o.alert,
                 conf=round(o.detection.conf, 2),
                 box=(
                     round(o.detection.box[0] / fw, 3),
@@ -202,6 +213,8 @@ class Session:
             depth_scale=scale,
             free_space=free_dbg,
             ego_speed=ego,
+            groups=groups,
+            hints=hints,
             timings_ms={
                 "detect": (t1 - t0) * 1000,
                 "depth": (t2 - t1) * 1000,
