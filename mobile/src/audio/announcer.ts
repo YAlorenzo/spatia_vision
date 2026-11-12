@@ -1,78 +1,90 @@
 import { Platform } from "react-native";
 import type { Obstacle } from "../api/protocol";
-import { classLabel, describe, metersRu, ZONE_RU } from "../components/labels";
+import { classLabel, metersRu, whereRu } from "../components/labels";
 
 /**
- * Голосовые подсказки без спама.
+ * Голосовые подсказки — только о главном, без спама.
  *
- * Приоритеты:
- *   1. ОПАСНОСТЬ — транспорт/человек едет навстречу (moving) или столкновение < 3 с.
- *      Перебивает текущую речь. Повтор по тому же объекту — не чаще раза в 6 с.
- *   2. Новый человек / транспорт / животное ближе 6 м — один раз на объект (повтор через 15 с).
- *   3. Препятствие прямо ближе 2.5 м — повтор, если подошли заметно ближе или прошло 5 с.
- * Пока голос говорит, обычные фразы не ставятся в очередь (они прозвучат в следующий
- * раз, если ещё актуальны) — так подсказки не отстают от реальности.
+ *   1. ОПАСНОСТЬ: что-то ЕДЕТ на тебя ("Осторожно! Машина слева"). Перебивает речь.
+ *      Повтор по тому же объекту — не чаще раза в 5 с.
+ *   2. Новая ГЛАВНАЯ опасность (primary): "Препятствие впереди, 3 метра".
+ *   3. Та же главная опасность стала ближе (пересекла 3 м, 1.5 м) — одно короткое число: "Полтора метра".
+ * Всё остальное (объекты сбоку, стоящие машины) — молчит. Пока голос говорит,
+ * обычные фразы не ставятся в очередь — они прозвучат, если ещё будут актуальны.
  */
 
-const DANGER_COOLDOWN_MS = 6000;
-const OBJECT_COOLDOWN_MS = 15000;
-const OBSTACLE_COOLDOWN_MS = 5000;
-const SAME_TEXT_MS = 4000;
-const NOTICE_RANGE_M = 6;
-const AHEAD_RANGE_M = 2.5;
+const DANGER_COOLDOWN_MS = 5000;
+const SAME_PRIMARY_MS = 6000; // та же главная опасность вернулась — не повторяем сразу
+const BANDS_M = [3, 1.5]; // пороги, при пересечении которых озвучиваем приближение
 
 export interface Utterance {
   text: string;
   danger: boolean;
-  key: string; // за что "отчитались" (id объекта)
 }
 
-/** Чистая логика выбора фразы — без браузерных API, легко проверить. */
+const keyOf = (o: Obstacle) => `${o.kind}:${o.id ?? o.cls}`;
+
+/** Чистая логика выбора фразы — без браузерных API. */
 export class AnnouncerLogic {
-  private lastSaid = new Map<string, { at: number; distance: number }>();
+  private dangerAt = new Map<string, number>();
+  private primaryKey: string | null = null;
+  private primarySaidAt = new Map<string, number>();
+  private band = Infinity; // самый близкий порог, который главная опасность уже пересекла
   private lastText = { text: "", at: 0 };
 
   reset() {
-    this.lastSaid.clear();
+    this.dangerAt.clear();
+    this.primarySaidAt.clear();
+    this.primaryKey = null;
+    this.band = Infinity;
     this.lastText = { text: "", at: 0 };
   }
 
   pick(obstacles: Obstacle[], now: number, speaking: boolean): Utterance | null {
-    const candidates: (Utterance & { score: number })[] = [];
-    for (const o of obstacles) {
-      const key = `${o.kind}:${o.id ?? o.cls + o.zone}`;
-      const prev = this.lastSaid.get(key);
-      const since = prev ? now - prev.at : Infinity;
-
-      const danger = o.kind !== "obstacle" && (o.moving || (o.ttc !== null && o.ttc < 3 && o.distance < 8));
-      if (danger && since > DANGER_COOLDOWN_MS) {
-        const text = o.moving
-          ? `Осторожно! ${classLabel(o.cls)} приближается ${ZONE_RU[o.zone]}`
-          : `Осторожно! ${describe(o)}`;
-        candidates.push({ text, danger: true, key, score: 100 - o.distance });
-        continue;
-      }
-      if (o.kind !== "obstacle" && o.distance < NOTICE_RANGE_M && since > OBJECT_COOLDOWN_MS) {
-        candidates.push({ text: describe(o), danger: false, key, score: 50 - o.distance });
-        continue;
-      }
-      if (o.kind === "obstacle" && o.zone === "center" && o.distance < AHEAD_RANGE_M) {
-        const closer = prev ? prev.distance - o.distance > 0.8 : true;
-        if (since > OBSTACLE_COOLDOWN_MS || closer) {
-          candidates.push({ text: `Препятствие прямо, ${metersRu(o.distance)}`, danger: false, key, score: 40 - o.distance });
-        }
+    // 1. Едет на тебя
+    const danger = obstacles
+      .filter((o) => o.moving && o.threat && o.kind !== "obstacle")
+      .sort((a, b) => (a.ttc ?? 99) - (b.ttc ?? 99))[0];
+    if (danger) {
+      const k = keyOf(danger);
+      if (now - (this.dangerAt.get(k) ?? -Infinity) > DANGER_COOLDOWN_MS) {
+        this.dangerAt.set(k, now);
+        return this.say(`Осторожно! ${classLabel(danger.cls)} ${whereRu(danger)}`, true, now);
       }
     }
-    if (!candidates.length) return null;
-    candidates.sort((a, b) => b.score - a.score);
-    const best = candidates[0];
-    if (speaking && !best.danger) return null;
-    if (best.text === this.lastText.text && now - this.lastText.at < SAME_TEXT_MS) return null;
 
-    const o = obstacles.find((x) => `${x.kind}:${x.id ?? x.cls + x.zone}` === best.key);
-    this.lastSaid.set(best.key, { at: now, distance: o?.distance ?? 0 });
-    this.lastText = { text: best.text, at: now };
-    return { text: best.text, danger: best.danger, key: best.key };
+    const p = obstacles.find((o) => o.primary);
+    if (!p) {
+      this.primaryKey = null;
+      this.band = Infinity;
+      return null;
+    }
+    if (speaking) return null;
+    const k = keyOf(p);
+
+    // 2. Новая главная опасность
+    if (k !== this.primaryKey) {
+      this.primaryKey = k;
+      this.band = Math.min(Infinity, ...BANDS_M.filter((b) => p.distance < b)); // уже ближе этого порога
+      if (now - (this.primarySaidAt.get(k) ?? -Infinity) < SAME_PRIMARY_MS) return null;
+      this.primarySaidAt.set(k, now);
+      return this.say(`${classLabel(p.cls)} ${whereRu(p)}, ${metersRu(p.distance)}`, false, now);
+    }
+
+    // 3. Та же опасность пересекла следующий порог — коротко, одним числом
+    const crossed = BANDS_M.filter((b) => b < this.band && p.distance < b);
+    if (crossed.length) {
+      this.band = Math.min(...crossed);
+      this.primarySaidAt.set(k, now);
+      return this.say(metersRu(p.distance), false, now);
+    }
+    return null;
+  }
+
+  private say(text: string, danger: boolean, now: number): Utterance | null {
+    if (!danger && text === this.lastText.text && now - this.lastText.at < 3000) return null;
+    this.lastText = { text, at: now };
+    return { text, danger };
   }
 }
 
@@ -109,7 +121,8 @@ class Announcer {
     const utt = new SpeechSynthesisUtterance(u.text);
     utt.lang = "ru-RU";
     if (this.voice) utt.voice = this.voice;
-    utt.rate = 1.15;
+    utt.rate = 1.25;
+    utt.volume = 1;
     utt.onstart = () => this.onSpeakingChange?.(true);
     utt.onend = utt.onerror = () => this.onSpeakingChange?.(false);
     synth.speak(utt);

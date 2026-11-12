@@ -36,9 +36,9 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--video", default=str(SERVER_DIR / "test_video.mp4"))
     p.add_argument("--indoor", action="store_true", help="Depth Anything Indoor (до 20 м)")
-    p.add_argument("--hfov", type=float, default=None, help="Горизонтальный FOV камеры, град.")
+    p.add_argument("--hfov", type=float, default=None, help="Угол обзора камеры по длинной стороне кадра, град.")
     p.add_argument("--max-frames", type=int, default=0)
-    p.add_argument("--width", type=int, default=640, help="Ужимать кадр до этой ширины (как телефон), 0 — не ужимать")
+    p.add_argument("--width", type=int, default=640, help="Ужимать длинную сторону кадра до этого (как телефон), 0 — не ужимать")
     p.add_argument("--name", default=None, help="Имя папки в output/")
     p.add_argument("--show", action="store_true")
     p.add_argument("--no-video", action="store_true", help="Не писать annotated.mp4")
@@ -79,19 +79,22 @@ def annotate(frame: np.ndarray, dbg: FrameDebug, label: str) -> np.ndarray:
         _tint(out, fs.obstacles, (200, 60, 200), 0.45)  # препятствия по глубине — фиолетовый
     for x in (w // 3, 2 * w // 3):
         cv2.line(out, (x, 0), (x, h), (255, 255, 255), 1)
-    for o in dbg.objects:
+    for o in sorted(dbg.objects, key=lambda o: o.primary):  # главную рисуем последней, поверх
         x1, y1, x2, y2 = o.detection.box
-        color = URGENCY_COLORS[o.urgency]
+        color = URGENCY_COLORS[o.urgency] if o.threat else (150, 150, 150)  # не угрозы — серым
         cv2.rectangle(out, (x1, y1), (x2, y2), color, 2 if o.kind != "obstacle" else 3)
+        if o.primary:
+            cv2.rectangle(out, (x1 - 3, y1 - 3), (x2 + 3, y2 + 3), (255, 255, 255), 2)
+            _text(out, "PRIMARY", (x1, min(h - 30, y2 + 16)), (255, 255, 255))
         d = o.distance
         tid = "" if o.detection.track_id is None or o.detection.track_id < 0 else f"#{o.detection.track_id} "
         main = f"{tid}{o.detection.cls} {d.smoothed_m:.1f}m {o.zone}"
-        if o.approach_mps > 0.3:
-            main += f" ->{o.approach_mps:.1f}m/s"
-            if o.ttc_s is not None:
-                main += f" ttc {o.ttc_s:.0f}s"
+        if o.in_path:
+            main += " PATH"
+        if o.ttc_s is not None:
+            main += f" ttc {o.ttc_s:.1f}s"
         if o.moving:
-            main += " MOVING"
+            main += f" MOVING {o.own_speed_mps:.1f}m/s"
         sub = f"d={d.depth_m:.1f}" if d.depth_m is not None else "d=-"
         sub += f" g={d.geometry_m:.1f}" if d.geometry_m is not None else " g=-"
         ty = max(18, y1 - 24)
@@ -102,8 +105,9 @@ def annotate(frame: np.ndarray, dbg: FrameDebug, label: str) -> np.ndarray:
            f"free {t.get('free', 0):.0f} total {t['total']:.0f}ms")
     if fs is not None and fs.plane is not None:
         hud += f" | cam {fs.plane.height:.2f}m pitch {fs.plane.pitch_deg:.0f}deg"
-    elif fs is not None:
-        hud += " | floor: not found"
+        if not fs.plane.measured:
+            hud += " (prior)"
+    hud += f" | me {dbg.ego_speed:+.1f}m/s"
     _text(out, hud, (10, h - 12), (255, 255, 255), 0.55)
     return out
 
@@ -122,7 +126,7 @@ def main() -> None:
     if args.indoor:
         settings.depth_model_id = DEPTH_MODELS["indoor"]
     if args.hfov:
-        settings.camera_hfov_deg = args.hfov
+        settings.camera_fov_deg = args.hfov
 
     name = args.name or Path(args.video).stem
     out_dir = SERVER_DIR / "output" / name
@@ -160,9 +164,9 @@ def main() -> None:
         src_pos += 1
         if not ok or (args.max_frames and i >= args.max_frames):
             break
-        if args.width and frame.shape[1] > args.width:  # как на сервере: клиент шлёт ~640px
-            frame = cv2.resize(frame, (args.width, round(frame.shape[0] * args.width / frame.shape[1])),
-                               interpolation=cv2.INTER_AREA)
+        if args.width and max(frame.shape[:2]) > args.width:  # как телефон: длинная сторона ~640px
+            k = args.width / max(frame.shape[:2])
+            frame = cv2.resize(frame, (round(frame.shape[1] * k), round(frame.shape[0] * k)), interpolation=cv2.INTER_AREA)
         obstacles, dbg = session.process(frame, timestamp=None if is_webcam else src_pos / fps_in)
         if i >= 5:  # первые кадры — прогрев CUDA
             timings.append(dbg.timings_ms["total"])
@@ -186,6 +190,11 @@ def main() -> None:
                 "approach_mps": o.approach_mps,
                 "ttc_s": o.ttc_s,
                 "moving": o.moving,
+                "in_path": o.in_path,
+                "own_speed_mps": o.own_speed_mps,
+                "threat": o.threat,
+                "primary": o.primary,
+                "ego_mps": round(dbg.ego_speed, 2),
             })
             if o.detection.track_id is not None:
                 tr = per_track[o.detection.track_id]
@@ -247,7 +256,7 @@ def main() -> None:
         "frames": i,
         "ms_per_frame": round(statistics.mean(timings), 1) if timings else None,
         "fps": round(1000 / statistics.mean(timings), 1) if timings else None,
-        "hfov_deg": settings.camera_hfov_deg,
+        "fov_deg": settings.camera_fov_deg,
         "depth_scale_final": round(scales[-1], 3) if scales else None,
         "tracks_10plus_frames": len(tracks),
         "median_jitter_raw_pct": med("jitter_raw_pct"),

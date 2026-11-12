@@ -10,16 +10,21 @@ export type Urgency = "high" | "medium" | "low";
 export type Kind = "person" | "vehicle" | "animal" | "obstacle";
 
 export interface Obstacle {
-  id: number | null; // для obstacle: -1/-2/-3 = зона слева/прямо/справа
+  id: number | null; // для obstacle: -1/-2/-3 = слева / в коридоре / справа
   kind: Kind;
   cls: string;
-  zone: Zone;
-  pan: number; // -1 (слева) .. 1 (справа)
+  zone: Zone; // center = коридор движения (в метрах), не средняя треть кадра
+  pan: number; // -1 (левый край кадра) .. 1 (правый)
+  bearing: number; // угол на объект, градусы: < 0 слева, > 0 справа
   distance: number; // метры
   urgency: Urgency;
-  approach: number; // скорость сближения, м/с (> 0 — приближается)
-  ttc: number | null; // время до столкновения, с
-  moving: boolean; // сближается быстрее шага — движется сам
+  in_path: boolean; // врежешься, если идти прямо
+  approach: number; // относительная скорость сближения, м/с (> 0 — приближается)
+  own_speed: number; // собственная скорость к пользователю (за вычетом его ходьбы), м/с
+  ttc: number | null; // эффективное время до столкновения, с (только для угроз)
+  moving: boolean; // движется сам
+  threat: boolean; // в коридоре или едет на пользователя
+  primary: boolean; // ГЛАВНАЯ опасность — звук только о ней
   conf: number;
   box: [number, number, number, number]; // x1, y1, x2, y2 в долях кадра
 }

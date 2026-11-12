@@ -6,8 +6,10 @@
 стены, мебель — что угодно, без детектора. Пиксели, уже объяснённые детектором
 (люди, машины), исключаются, чтобы не дублировать.
 
-Результат — не больше одного препятствия на зону (слева / прямо / справа):
-ближайшее. Этого достаточно для звука и не создаёт шума.
+Зоны считаются в МЕТРАХ, а не по третям кадра:
+  center — коридор движения (|X| < corridor_half_width): то, во что врежешься, если идти прямо;
+  left / right — полосы сбоку до generic_side_max_m.
+На каждую зону — одно ближайшее препятствие.
 """
 import math
 from dataclasses import dataclass
@@ -26,6 +28,7 @@ ZONES: tuple[Zone, ...] = ("left", "center", "right")
 class GroundPlane:
     normal: np.ndarray  # единичная нормаль, смотрит "вверх" (к камере)
     height: float  # высота камеры над полом, м
+    measured: bool = True  # False — априорная оценка (пол ещё не видели)
 
     def height_above(self, pts: np.ndarray) -> np.ndarray:
         return pts @ self.normal + self.height
@@ -36,11 +39,17 @@ class GroundPlane:
         вектор "вверх" в её координатах получает отрицательную Z-составляющую."""
         return math.degrees(math.asin(float(np.clip(-self.normal[2], -1, 1))))
 
+    @classmethod
+    def prior(cls, height: float, pitch_deg: float) -> "GroundPlane":
+        p = math.radians(pitch_deg)
+        return cls(np.array([0.0, -math.cos(p), -math.sin(p)]), height, measured=False)
+
 
 @dataclass
 class GenericObstacle:
     zone: Zone
-    distance_m: float
+    distance_m: float  # расстояние ВПЕРЁД (по оси камеры) до ближайшей точки
+    lateral_m: float  # смещение ближайшей точки вбок от оси (по модулю)
     box: tuple[int, int, int, int]  # пиксели полного кадра
     area: float  # доля кадра
 
@@ -86,38 +95,36 @@ def _fit_plane(pts: np.ndarray, s: Settings, rng: np.random.Generator) -> Ground
     normal = vt[2]
     if normal[1] > 0:
         normal = -normal
+    if -normal[1] < min_up:
+        return None
     d = -normal @ centroid
-    if d <= 0.3:  # камера ниже 30 см над "полом" — ошибка подгонки
+    if not 0.3 < d < 3.0:  # камера ниже 30 см или выше 3 м над "полом" — ошибка подгонки
         return None
     return GroundPlane(normal=normal, height=float(d))
 
 
 class FreeSpaceAnalyzer:
-    """Состояние на сессию: плоскость пола сглаживается между кадрами."""
+    """Состояние на сессию: плоскость пола сглаживается и НЕ теряется между кадрами."""
 
     def __init__(self, s: Settings):
         self.s = s
-        self.plane: GroundPlane | None = None
-        self.plane_age = 0
+        self.plane: GroundPlane = GroundPlane.prior(s.ground_prior_height_m, s.ground_prior_pitch_deg)
         self.rng = np.random.default_rng(0)
 
     def reset(self) -> None:
-        self.plane = None
-        self.plane_age = 0
+        self.plane = GroundPlane.prior(self.s.ground_prior_height_m, self.s.ground_prior_pitch_deg)
 
-    def _update_plane(self, new: GroundPlane | None) -> GroundPlane | None:
+    def _update_plane(self, new: GroundPlane | None) -> GroundPlane:
+        # Не нашли пол (например, вплотную к стене — пола в кадре нет) — держим последний:
+        # телефон в руке держится примерно одинаково, а без пола стену не отличить.
         if new is None:
-            self.plane_age += 1
-            if self.plane_age > self.s.ground_ttl_frames:
-                self.plane = None
             return self.plane
-        if self.plane is None:
+        if not self.plane.measured:
             self.plane = new
         else:
             a = self.s.ground_smoothing
             normal = (1 - a) * self.plane.normal + a * new.normal
             self.plane = GroundPlane(normal / np.linalg.norm(normal), (1 - a) * self.plane.height + a * new.height)
-        self.plane_age = 0
         return self.plane
 
     def analyze(
@@ -125,12 +132,12 @@ class FreeSpaceAnalyzer:
     ) -> tuple[list[GenericObstacle], FreeSpaceDebug]:
         s = self.s
         H, W = depth_m.shape
-        step = max(1, W // s.generic_grid_width)
+        step = max(1, max(W, H) // s.generic_grid_width)
         z = depth_m[step // 2::step, step // 2::step]
         gh, gw = z.shape
         us = (np.arange(gw) * step + step // 2).astype(np.float32)
         vs = (np.arange(gh) * step + step // 2).astype(np.float32)
-        f = focal_px(W, s.camera_hfov_deg)
+        f = focal_px(W, H, s.camera_fov_deg)
         x = (us[None, :] - W / 2) * z / f
         y = (vs[:, None] - H / 2) * z / f
         pts = np.stack([x, y, z], axis=-1)  # (gh, gw, 3): X вправо, Y вниз, Z вперёд
@@ -141,8 +148,6 @@ class FreeSpaceAnalyzer:
         cand &= (z > 0.2) & (z < 10)
         plane = self._update_plane(_fit_plane(pts[cand], s, self.rng))
         dbg = FreeSpaceDebug(plane=plane)
-        if plane is None:
-            return [], dbg
 
         h = plane.height_above(pts.reshape(-1, 3)).reshape(gh, gw)
         dbg.ground = np.abs(h) < 0.08 + 0.03 * z
@@ -153,36 +158,41 @@ class FreeSpaceAnalyzer:
             x1, y1, x2, y2 = det.box
             obst[max(0, y1 // step):y2 // step + 1, max(0, x1 // step):x2 // step + 1] = False
 
-        # Чистим шум: морфология + минимальная площадь компоненты
-        m = cv2.morphologyEx(obst.astype(np.uint8), cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
-        dbg.obstacles = m.astype(bool)
+        # Чистим шум: минимальная площадь компоненты
+        m = obst.astype(np.uint8)
         count, labels, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
         min_cells = s.generic_min_area * gh * gw
-
-        nearest: dict[Zone, GenericObstacle] = {}
+        keep = np.zeros_like(obst)
         for i in range(1, count):
-            if stats[i, cv2.CC_STAT_AREA] < min_cells:
+            if stats[i, cv2.CC_STAT_AREA] >= min_cells:
+                keep |= labels == i
+        dbg.obstacles = keep
+        if not keep.any():
+            return [], dbg
+
+        # Зоны в метрах: коридор движения и полосы по бокам
+        half = s.corridor_half_width_m
+        zone_masks = {
+            "center": keep & (np.abs(x) < half),
+            "left": keep & (x <= -half) & (x > -s.generic_side_max_m),
+            "right": keep & (x >= half) & (x < s.generic_side_max_m),
+        }
+        result: list[GenericObstacle] = []
+        for zone in ZONES:
+            zm = zone_masks[zone]
+            # В узком коридоре вдали мало ячеек — порог площади для него мягче
+            if zm.sum() < (min_cells / 4 if zone == "center" else min_cells / 2):
                 continue
-            cells = labels == i
-            cols = np.nonzero(cells.any(axis=0))[0]
-            # Компонента может тянуться через несколько зон — относим к каждой
-            for zi, zone in enumerate(ZONES):
-                lo, hi = gw * zi / 3, gw * (zi + 1) / 3
-                zone_cols = cols[(cols >= lo) & (cols < hi)]
-                if len(zone_cols) == 0:
-                    continue
-                part = cells[:, int(lo):int(math.ceil(hi))]
-                if part.sum() < min_cells / 2:
-                    continue
-                zdist = float(np.percentile(z[:, int(lo):int(math.ceil(hi))][part], 10))
-                if zone in nearest and nearest[zone].distance_m <= zdist:
-                    continue
-                rows = np.nonzero(part.any(axis=1))[0]
-                box = (
-                    int(zone_cols.min() * step),
-                    int(rows.min() * step),
-                    int(min(W, (zone_cols.max() + 1) * step)),
-                    int(min(H, (rows.max() + 1) * step)),
-                )
-                nearest[zone] = GenericObstacle(zone, zdist, box, float(part.sum()) / (gh * gw))
-        return [nearest[z] for z in ZONES if z in nearest], dbg
+            zd = z[zm]
+            dist = float(np.percentile(zd, 10))
+            near = zm & (z <= np.percentile(zd, 30))  # ближняя часть — для рамки и смещения
+            rows, cols = np.nonzero(near)
+            box = (
+                int(cols.min() * step),
+                int(rows.min() * step),
+                int(min(W, (cols.max() + 1) * step)),
+                int(min(H, (rows.max() + 1) * step)),
+            )
+            lateral = float(np.min(np.abs(x[near])))
+            result.append(GenericObstacle(zone, dist, lateral, box, float(zm.sum()) / (gh * gw)))
+        return result, dbg

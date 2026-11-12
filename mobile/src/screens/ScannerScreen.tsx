@@ -48,7 +48,8 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
 
   useAudioFeedback({ obstacles, active: status === "streaming", beeps, speech });
 
-  const nearest = obstacles[0];
+  const primary = obstacles.find((o) => o.primary);
+  const otherThreats = obstacles.filter((o) => o.threat && !o.primary).length;
 
   return (
     <View className="flex-1 bg-zinc-950">
@@ -112,24 +113,24 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
         )}
       </View>
 
-      {/* Ближайшее препятствие + стоп */}
+      {/* Главная опасность + стоп */}
       <View className="absolute bottom-10 w-full items-center gap-4 px-6">
         <View
           className="w-full rounded-3xl bg-black/70 px-5 py-4"
           accessibilityLiveRegion="polite"
           accessible
         >
-          {nearest ? (
-            <Text className="text-2xl font-black text-center" style={{ color: URGENCY_COLOR[nearest.urgency] }}>
-              {describe(nearest)}
+          {primary ? (
+            <Text className="text-2xl font-black text-center" style={{ color: URGENCY_COLOR[primary.urgency] }}>
+              {describe(primary)}
             </Text>
           ) : (
             <Text className="text-zinc-300 text-xl font-bold text-center">
-              {status === "streaming" ? "Препятствий не видно" : "Ожидание сервера"}
+              {status === "streaming" ? "Путь свободен" : "Ожидание сервера"}
             </Text>
           )}
-          {obstacles.length > 1 && (
-            <Text className="text-zinc-400 text-sm text-center mt-1">ещё объектов: {obstacles.length - 1}</Text>
+          {otherThreats > 0 && (
+            <Text className="text-zinc-400 text-sm text-center mt-1">ещё опасностей: {otherThreats}</Text>
           )}
         </View>
 

@@ -62,7 +62,7 @@ class Settings:
     yolo_conf: float = 0.45
     yolo_imgsz: int = 640
     use_tracking: bool = True  # ByteTrack: стабильные ID объектов между кадрами
-    max_frame_width: int = 960  # кадры шире ужимаем (защита от огромных фото)
+    max_frame_side: int = 960  # кадры с длинной стороной больше — ужимаем (защита от огромных фото)
     dynamic_classes: dict[str, str] = field(default_factory=lambda: dict(DYNAMIC_CLASSES))
 
     # --- Глубина ---
@@ -71,7 +71,7 @@ class Settings:
 
     # --- Дистанция ---
     depth_percentile: float = 30.0  # ближние 30% пикселей объекта — отсекает фон
-    camera_hfov_deg: float = 65.0  # горизонтальный угол обзора камеры (телефон ~60-70°)
+    camera_fov_deg: float = 65.0  # угол обзора камеры по ДЛИННОЙ стороне кадра (телефон ~60-70°)
     use_geometry: bool = True
     geometry_weight: float = 0.5  # вес геометрии при слиянии с моделью глубины
     # Расхождение глубины и геометрии (во сколько раз): от 1.2x вес начинает
@@ -92,21 +92,39 @@ class Settings:
     # --- Препятствия по глубине (без классов) ---
     generic_obstacles: bool = True
     generic_grid_width: int = 160  # карта глубины ужимается до этой ширины для анализа
-    generic_max_range_m: float = 5.0  # дальше — не интересно для навигации
+    generic_max_range_m: float = 7.0  # дальше — не интересно для навигации
     generic_min_height_m: float = 0.25  # ниже — бордюр/неровность пола, не препятствие
     generic_max_height_m: float = 2.0  # выше — над головой, не мешает
     generic_min_area: float = 0.004  # минимальная доля кадра, чтобы не реагировать на шум
+    generic_side_max_m: float = 2.0  # препятствия сбоку дальше этого (в сторону) не интересны
     # Оценка плоскости пола (RANSAC по нижней части кадра)
     ground_iterations: int = 80
     ground_max_tilt_deg: float = 55.0  # насколько камера может быть наклонена к полу
     ground_smoothing: float = 0.3  # EMA плоскости пола между кадрами
-    ground_ttl_frames: int = 15  # сколько кадров держать старую плоскость, если не нашли новую
+    # Пол не виден (вплотную к стене)? Держим последнюю найденную плоскость: телефон
+    # в руке держится примерно одинаково. Если пол ещё ни разу не нашли — используем это:
+    ground_prior_height_m: float = 1.35
+    ground_prior_pitch_deg: float = 15.0
+
+    # --- Коридор движения и главная опасность ---
+    corridor_half_width_m: float = 0.45  # полоса "куда я иду": плечи + запас
+    walk_speed_mps: float = 1.0  # для времени до столкновения, если стоишь (можешь пойти)
+    cpa_margin_m: float = 0.6  # едущее пройдёт ближе коридора + этот запас — опасно
+    path_max_range_m: float = 7.0  # неподвижное в коридоре дальше этого — ещё не опасность
+    primary_max_ttc_s: float = 7.0  # дальше по времени — опасности нет
+    primary_switch_ratio: float = 1.4  # новая угроза должна быть в 1.4 раза опаснее, чтобы сменить главную
+    primary_hold_s: float = 1.0  # первую секунду после смены — только если вдвое опаснее
 
     # --- Движение ---
     motion_window_s: float = 1.0  # окно для оценки скорости сближения
     motion_max_range_m: float = 15.0  # дальше скорость не оцениваем (шум глубины)
     motion_noise_frac: float = 0.15  # кажущаяся скорость от шума ~ 15% дистанции в секунду
-    moving_speed_mps: float = 2.5  # сближение быстрее — объект сам едет навстречу (быстрее шага)
+    motion_jump_frac: float = 0.3  # скачок дистанции больше 30% за кадр — это другой объект, историю сбрасываем
+    # СОБСТВЕННАЯ скорость объекта (за вычетом твоей) больше — движется сам.
+    # Для машин порог выше: ложное "машина едет" пугает, а едущая машина даёт 5+ м/с
+    moving_speed_mps: dict[str, float] = field(default_factory=lambda: {"vehicle": 2.5, "person": 1.5, "animal": 1.5})
+    own_speed_smoothing: float = 0.3  # EMA собственной скорости объекта
+    ego_smoothing: float = 0.2  # EMA скорости пользователя
     ttc_high_s: float = 3.0  # время до столкновения меньше — "high"
     ttc_medium_s: float = 6.0  # меньше — "medium"
 

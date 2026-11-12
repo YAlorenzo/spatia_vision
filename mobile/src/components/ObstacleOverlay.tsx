@@ -37,17 +37,20 @@ export const ObstacleOverlay = ({ obstacles, frameSize }: Props) => {
           const [x1, x2] = frameSize!.mirrored ? [1 - bx2, 1 - bx1] : [bx1, bx2];
           const fw = frameSize!.width * scale;
           const fh = frameSize!.height * scale;
-          const color = URGENCY_COLOR[o.urgency];
+          // Не угрозы — серые и полупрозрачные; главная опасность — толстая рамка
+          const color = o.threat ? URGENCY_COLOR[o.urgency] : "#a1a1aa";
           return (
             <View
-              key={o.id ?? `i${i}`}
-              className="absolute rounded-lg border-2"
+              key={`${o.kind}:${o.id ?? i}`}
+              className="absolute rounded-lg"
               style={{
                 left: offsetX + x1 * fw,
                 top: offsetY + y1 * fh,
                 width: (x2 - x1) * fw,
                 height: (y2 - y1) * fh,
                 borderColor: color,
+                borderWidth: o.primary ? 4 : 2,
+                opacity: o.threat ? 1 : 0.4,
                 // препятствия по глубине (без класса) — пунктиром и с заливкой
                 borderStyle: o.kind === "obstacle" ? "dashed" : "solid",
                 backgroundColor: o.kind === "obstacle" ? `${color}22` : "transparent",

@@ -1,4 +1,4 @@
-import type { Obstacle, Urgency, Zone } from "../api/protocol";
+import type { Obstacle, Urgency } from "../api/protocol";
 
 const CLASS_RU: Record<string, string> = {
   person: "Человек",
@@ -15,8 +15,6 @@ const CLASS_RU: Record<string, string> = {
   sheep: "Овца",
   obstacle: "Препятствие",
 };
-
-export const ZONE_RU: Record<Zone, string> = { left: "слева", center: "прямо", right: "справа" };
 
 export const URGENCY_COLOR: Record<Urgency, string> = {
   high: "#ef4444",
@@ -39,9 +37,10 @@ export function metersRu(d: number): string {
   return `${n} метров`;
 }
 
-/** Короткая фраза для экрана и озвучки: "Человек прямо, 3 метра". */
+/** Где объект относительно пользователя: в коридоре движения — "впереди". */
+export const whereRu = (o: Obstacle) => (o.in_path ? "впереди" : o.bearing < 0 ? "слева" : "справа");
+
+/** Короткая фраза для экрана: "Препятствие впереди, 3 метра". */
 export function describe(o: Obstacle): string {
-  const what = classLabel(o.cls);
-  if (o.moving) return `${what} едет, ${ZONE_RU[o.zone]}, ${metersRu(o.distance)}`;
-  return `${what} ${ZONE_RU[o.zone]}, ${metersRu(o.distance)}`;
+  return `${classLabel(o.cls)}${o.moving ? " едет" : ""} ${whereRu(o)}, ${metersRu(o.distance)}`;
 }
