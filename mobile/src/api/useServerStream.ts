@@ -1,6 +1,7 @@
 import { RefObject, useEffect, useRef, useState } from "react";
 import { Platform } from "react-native";
 import type { CameraView } from "expo-camera";
+import { cameraTilt, Vec3 } from "../sensors/cameraTilt";
 import {
   ConfigMessage,
   encodeFrame,
@@ -8,6 +9,7 @@ import {
   HelloMessage,
   Hint,
   Obstacle,
+  PoseMessage,
   PROTOCOL_VERSION,
   ResultMessage,
   Scene,
@@ -157,6 +159,12 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
         const frame = encodeFrame(seq, base64);
         const sentAt = Date.now();
         const reply = waitReply(seq);
+        // Ориентация телефона для этого кадра — сервер учтёт наклон и завал вбок
+        const up = cameraTilt.upVector(Date.now());
+        if (up) {
+          const pose: PoseMessage = { type: "pose", up: up.map((v) => Math.round(v * 1000) / 1000) as Vec3 };
+          ws.send(JSON.stringify(pose));
+        }
         ws.send(frame);
         const result = await reply;
         if (!alive) break;

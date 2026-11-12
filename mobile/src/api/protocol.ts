@@ -63,6 +63,16 @@ export interface ConfigMessage {
   hfov?: number;
 }
 
+/**
+ * Ориентация телефона для следующего кадра: "вверх" (по гравитации) в осях камеры —
+ * x вправо, y вниз по картинке, z вперёд от камеры. Телефон вертикально: [0, -1, 0].
+ * Шлётся перед каждым кадром, если есть датчик ориентации.
+ */
+export interface PoseMessage {
+  type: "pose";
+  up: [number, number, number];
+}
+
 // сервер -> клиент
 export interface ReadyMessage {
   type: "ready";

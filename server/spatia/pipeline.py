@@ -84,8 +84,11 @@ class Session:
             self.ego.reset()
         self.depth = self.engine.depth(self.s.depth_model_id)
 
-    def process(self, frame_bgr: np.ndarray, timestamp: float | None = None) -> tuple[list[Obstacle], FrameDebug]:
-        """timestamp — время кадра в секундах (для скорости). По умолчанию — текущее."""
+    def process(self, frame_bgr: np.ndarray, timestamp: float | None = None,
+                up: np.ndarray | None = None) -> tuple[list[Obstacle], FrameDebug]:
+        """timestamp — время кадра в секундах (для скорости). По умолчанию — текущее.
+        up — направление "вверх" в координатах камеры (X вправо, Y вниз, Z вперёд) с датчика
+        ориентации телефона; без него наклон оценивается по полу."""
         t_frame = time.monotonic() if timestamp is None else timestamp
         t0 = time.perf_counter()
         boxes = self.engine.detector.detect(frame_bgr)
@@ -122,30 +125,42 @@ class Session:
         # Препятствия без классов по карте глубины: коридор движения + полосы по бокам
         free_dbg = None
         if self.s.generic_obstacles:
-            generic, free_dbg = self.free_space.analyze(depth_map * scale, detections)
+            generic, free_dbg = self.free_space.analyze(depth_map * scale, detections, up)
             for g in generic:
                 det = Detection(track_id=-(ZONES.index(g.zone) + 1), cls=GENERIC_CLASS,
                                 conf=min(1.0, round(g.area * 20, 2)), box=g.box)
-                candidates.append((det, "obstacle", g.distance_m, None, g.lateral_m, g.zone))
+                candidates.append((det, "obstacle", g.distance_m, None, g.x_m, g.zone))
         t3 = time.perf_counter()
 
+        # Земные оси (с учётом наклона и завала телефона) — из плоскости пола / датчика
+        plane = free_dbg.plane if free_dbg is not None else self.free_space.plane
+        focal = dist.focal_px(fw, fh, self.s.camera_fov_deg)
+
         objects: list[TrackedObject] = []
-        for det, kind, depth_m, geom_m, lateral, gzone in candidates:
+        for det, kind, depth_m, geom_m, gx, gzone in candidates:
             fused = dist.fuse(depth_m, geom_m, self.s)
             if fused is None:
                 continue
             fused = min(max(fused, self.s.min_distance_m), self.s.max_distance_m)
             smoothed = self.smoother.update(det.track_id, fused, self.frame_idx)
-            cx = (det.box[0] + det.box[2]) / 2
-            bearing = dist.bearing_deg(cx, fw, fh, self.s.camera_fov_deg)
-            if lateral is None:  # объект детектора: положение на земле по углу и дистанции
-                x_m = smoothed * math.sin(math.radians(bearing))
-                z_m = smoothed * math.cos(math.radians(bearing))
-                lateral = abs(x_m)
-            else:  # препятствие по глубине: дистанция уже "вперёд", смещение — в метрах
-                x_m = math.copysign(lateral, bearing)
-                z_m = smoothed
-            motion = self.motion.update(det.track_id, t_frame, smoothed, x_m, z_m)
+            if gx is None:
+                # Объект детектора: центр рамки -> 3D-точка камеры -> положение на земле.
+                # Так "вперёд/вбок" верны и при наклонённом или заваленном вбок телефоне.
+                cx = (det.box[0] + det.box[2]) / 2
+                cy = (det.box[1] + det.box[3]) / 2
+                p = np.array([(cx - fw / 2) / focal, (cy - fh / 2) / focal, 1.0]) * smoothed
+                x_m, z_m = (float(v) for v in plane.to_ground(p))
+            else:  # препятствие по глубине: уже в метрах по земле
+                x_m, z_m = gx, smoothed
+            bearing = math.degrees(math.atan2(x_m, max(z_m, 0.1)))
+            # Рамка упирается в левый/правый край кадра — объект виден частично (проходишь мимо
+            # припаркованной машины): по ней скорость не оценить, иначе стоящая машина "едет"
+            truncated = gx is None and (det.box[0] <= 0.01 * fw or det.box[2] >= 0.99 * fw)
+            # Скорость — по НЕсглаженной дистанции: скачок (человека заслонили, трекер перепутал
+            # соседей в толпе) остаётся чистым скачком и сбрасывает историю, а не размазывается
+            # сглаживанием на несколько кадров в ложное "сближение 9 м/с"
+            k_raw = fused / smoothed
+            motion = self.motion.update(det.track_id, t_frame, fused, x_m * k_raw, z_m * k_raw, truncated)
             zone, pan = zone_and_pan(det.box, fw)
             objects.append(TrackedObject(
                 detection=det,
@@ -155,7 +170,8 @@ class Session:
                 pan=pan,
                 urgency="low",
                 bearing_deg=round(bearing, 1),
-                lateral_m=lateral,
+                lateral_m=abs(x_m),
+                forward_m=z_m,
                 approach_mps=motion.approach_mps,
                 vx_mps=motion.vx_mps,
                 vz_mps=motion.vz_mps,
@@ -167,13 +183,13 @@ class Session:
         ego = self.ego.update(
             gray,
             t_frame,
-            free_dbg.plane if free_dbg is not None else None,
-            dist.focal_px(fw, fh, self.s.camera_fov_deg),
+            plane,
+            focal,
             [d.box for d in detections],
             [o.approach_mps for o in objects if o.kind in ("obstacle", "vehicle") and o.motion_valid],
         )
         # Главная опасность: коридор движения + то, что едет на пользователя
-        self.threats.assess(objects, ego, dist.focal_px(fw, fh, self.s.camera_fov_deg), t_frame)
+        self.threats.assess(objects, ego, focal, t_frame)
         # Толпа / парковка / слишком темно
         groups, hints = self.context.update(objects, gray, t_frame)
         objects.sort(key=lambda o: (not o.primary, not o.threat, o.distance.smoothed_m))

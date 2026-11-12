@@ -9,14 +9,16 @@ import { classLabel, groupRu, metersRu, warnReason, warnRu, whereRu } from "../c
  *   1. ОПАСНОСТЬ: что-то ЕДЕТ на тебя ("Осторожно! Машина слева"). Перебивает речь.
  *   2. Новая ГЛАВНАЯ опасность (primary): "Препятствие впереди, 3 метра".
  *   3. Главная опасность стала ближе (пересекла 3 м, 1.5 м): "Полтора метра".
- *   4. Камера плохо видит (темно, размыто): "Остановитесь…" — каждые 8 с, пока не наладится.
+ *   4. Камера плохо видит:
+ *      - смотрит в пол/небо (датчик наклона): "Поднимите телефон выше" -> через 5 с ещё раз ->
+ *        через 15 с "Остановитесь…" (и каждые 15 с, пока не поднимут);
+ *      - темно, размыто: "Остановитесь…" — каждые 8 с, пока не наладится.
  *   5. Обстановка: "Внимание, парковка…" (повтор каждые 30 с, пока на парковке),
  *      "Толпа людей слева и впереди".
  *   6. Объекты alert=warn: едущая машина (даже далеко), человек идёт к тебе или стоит
  *      на пути, живое/транспорт сбоку рядом. Каждый — один раз (повтор через 15 с,
  *      или сразу, если изменилась причина: стоял сбоку -> пошёл к тебе).
  *      В толпе люди по одному не озвучиваются; на парковке — стоящие машины.
- *   7. Советы: "Поднимите телефон выше".
  * Пока голос говорит, фразы не копятся в очередь — каждый ответ сервера выбирается
  * заново самое важное из актуального.
  */
@@ -27,8 +29,23 @@ const SAME_PRIMARY_MS = 6000; // та же главная опасность в�
 const BANDS_M = [3, 1.5]; // пороги, при пересечении которых озвучиваем приближение
 const WARN_REPEAT_MS = 15000; // тот же объект по той же причине
 const CROWD_REPEAT_MS = 20000;
+const CROWD_CHANGE_MS = 10000; // толпа сместилась — повторяем не раньше
 const PARKING_REPEAT_MS = 30000; // всё ещё на парковке — напоминаем
-const TILT_REPEAT_MS = 10000;
+const TILT_SECOND_MS = 5000; // вторая просьба про наклон
+const TILT_STOP_MS = 15000; // потом пауза — и "Остановитесь" (повтор с тем же интервалом)
+const TILT_RESET_MS = 3000; // телефон держат нормально столько — начинаем сначала
+const TILT_TEXT: Record<TiltAdvice, [string, string, string]> = {
+  raise: [
+    "Поднимите телефон выше",
+    "Поднимите телефон, камера смотрит в пол",
+    "Остановитесь. Камера смотрит в пол, препятствий впереди не видно. Поднимите телефон",
+  ],
+  lower: [
+    "Опустите телефон",
+    "Опустите телефон, камера смотрит вверх",
+    "Остановитесь. Камера смотрит вверх, дорогу не видно. Опустите телефон",
+  ],
+};
 const UNCLEAR_REPEAT_MS = 8000; // камера плохо видит — просим остановиться
 const GAP_MS = 700; // пауза между обычными фразами, чтобы не сливались
 
@@ -58,9 +75,16 @@ export class AnnouncerLogic {
   private lastText = { text: "", at: 0 };
   private lastDangerAt = -Infinity;
   private lastWasDanger = false;
+  private tiltKind: TiltAdvice | null = null;
+  private tiltStage = 0; // сколько просьб про наклон уже сказано (0..3)
+  private tiltAt = -Infinity;
+  private tiltBadAt = 0; // когда наклон последний раз был плохим
   lastEndAt = 0; // когда закончилась последняя фраза (для паузы)
 
   reset() {
+    this.tiltKind = null;
+    this.tiltStage = 0;
+    this.tiltAt = -Infinity;
     this.dangerAt.clear();
     this.primarySaidAt.clear();
     this.warnSaid.clear();
@@ -121,6 +145,8 @@ export class AnnouncerLogic {
     }
 
     // 4. Камера плохо видит — по такому кадру ничего надёжно не определить: просим остановиться
+    const tiltText = this.tiltAdvice(tilt, now);
+    if (tiltText) return this.say(tiltText, false, now);
     const unclear = hints.includes("too_dark") ? "dark" : hints.includes("blurry") ? "blurry" : null;
     if (unclear && now - (this.adviceAt.get("unclear") ?? -Infinity) > UNCLEAR_REPEAT_MS) {
       this.adviceAt.set("unclear", now);
@@ -138,8 +164,8 @@ export class AnnouncerLogic {
       const zones = g.zones.join(",");
       const prev = this.groupSaid.get(g.type);
       const repeat = g.type === "parking" ? PARKING_REPEAT_MS : CROWD_REPEAT_MS;
-      // Толпа сместилась (была слева — теперь впереди) — говорим сразу
-      const changed = g.type === "crowd" && prev != null && prev.zones !== zones;
+      // Толпа сместилась (была слева — теперь впереди) — говорим, но не чаще раза в 10 с
+      const changed = g.type === "crowd" && prev != null && prev.zones !== zones && now - prev.at > CROWD_CHANGE_MS;
       if (!prev || changed || now - prev.at > repeat) {
         this.groupSaid.set(g.type, { zones, at: now });
         const again = prev != null && !changed;
@@ -169,15 +195,31 @@ export class AnnouncerLogic {
       return this.say(warnRu(o), false, now);
     }
 
-    // 7. Советы
-    if (tilt) {
-      const text = tilt === "raise" ? "Поднимите телефон выше" : "Опустите телефон, камера смотрит вверх";
-      if (now - (this.adviceAt.get(tilt) ?? -Infinity) > TILT_REPEAT_MS) {
-        this.adviceAt.set(tilt, now);
-        return this.say(text, false, now);
-      }
-    }
     return null;
+  }
+
+  /**
+   * Камера смотрит в пол (или в небо) — по нарастающей:
+   *   1-я просьба сразу; через 5 с — вторая; ещё через 15 с — "Остановитесь…",
+   *   и дальше "Остановитесь…" каждые 15 с, пока телефон не поднимут.
+   * Телефон держат нормально 3 с — счёт сбрасывается.
+   */
+  private tiltAdvice(tilt: TiltAdvice | null, now: number): string | null {
+    if (!tilt) {
+      if (this.tiltStage > 0 && now - this.tiltBadAt > TILT_RESET_MS) this.tiltStage = 0;
+      return null;
+    }
+    this.tiltBadAt = now;
+    if (tilt !== this.tiltKind) {
+      this.tiltKind = tilt;
+      this.tiltStage = 0;
+    }
+    const wait = [0, TILT_SECOND_MS, TILT_STOP_MS, TILT_STOP_MS][this.tiltStage];
+    if (now - this.tiltAt < wait) return null;
+    const stage = this.tiltStage;
+    this.tiltStage = Math.min(3, stage + 1);
+    this.tiltAt = now;
+    return TILT_TEXT[tilt][Math.min(stage, 2)];
   }
 
   private say(text: string, danger: boolean, now: number): Utterance | null {

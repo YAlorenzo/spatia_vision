@@ -42,6 +42,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--name", default=None, help="Имя папки в output/")
     p.add_argument("--show", action="store_true")
     p.add_argument("--no-video", action="store_true", help="Не писать annotated.mp4")
+    p.add_argument("--step", type=int, default=1,
+                   help="Обрабатывать каждый N-й кадр (60 к/с видео с --step 4 ≈ 15 к/с, как вживую)")
     p.add_argument("--dump", action="store_true",
                    help="Писать ответы сервера по кадрам в frames.jsonl (для проверки звука/голоса)")
     p.add_argument("--live", action="store_true",
@@ -168,6 +170,9 @@ def main() -> None:
         if skip_frames:
             target = int((time.perf_counter() - t_start) * fps_in)
             while src_pos < target and cap.grab():
+                src_pos += 1
+        for _ in range(args.step - 1):  # пропуск кадров: --step
+            if cap.grab():
                 src_pos += 1
         ok, frame = cap.read()
         src_pos += 1

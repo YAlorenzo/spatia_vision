@@ -1,12 +1,20 @@
-"""Препятствия без классов — по карте глубины.
+"""Препятствия без классов — по карте глубины. И "земные" оси для всего конвейера.
 
 Идея: переводим карту глубины в 3D-облако точек (зная угол обзора камеры),
-находим плоскость пола (RANSAC), и всё, что заметно возвышается над полом
-и находится ближе N метров, считаем препятствием. Так ловятся деревья, столбы,
-стены, мебель — что угодно, без детектора. Пиксели, уже объяснённые детектором
-(люди, машины), исключаются, чтобы не дублировать.
+находим плоскость пола, и всё, что заметно возвышается над полом и находится
+ближе N метров, считаем препятствием. Так ловятся деревья, столбы, стены, мебель —
+что угодно, без детектора. Пиксели, уже объяснённые детектором (люди, машины),
+исключаются, чтобы не дублировать.
 
-Зоны считаются в МЕТРАХ, а не по третям кадра:
+Наклон телефона. Камера редко смотрит строго горизонтально: телефон наклонён вперёд,
+завален вбок, экшн-камера смотрит чуть вверх. Поэтому "вперёд" и "вбок" считаются не в
+осях камеры, а в ЗЕМНЫХ осях: up — вверх (по гравитации), forward — горизонтальное
+направление, куда смотрит камера, right — вправо по земле. Направление "вверх" берётся:
+  1. с датчика ориентации телефона (присылает клиент) — точно и сразу;
+  2. иначе — из нормали найденной плоскости пола;
+  3. иначе — априорная оценка (телефон в руке, наклон ~15° вниз).
+
+Зоны считаются в МЕТРАХ по земле, а не по третям кадра:
   center — коридор движения (|X| < corridor_half_width): то, во что врежешься, если идти прямо;
   left / right — полосы сбоку до generic_side_max_m.
 На каждую зону — одно ближайшее препятствие.
@@ -22,22 +30,43 @@ from .distance import focal_px
 from .schemas import Detection, Zone
 
 ZONES: tuple[Zone, ...] = ("left", "center", "right")
+_Z = np.array([0.0, 0.0, 1.0])  # ось камеры "вперёд"
+_IMG_UP = np.array([0.0, -1.0, 0.0])  # "вверх по картинке"
 
 
 @dataclass
 class GroundPlane:
-    normal: np.ndarray  # единичная нормаль, смотрит "вверх" (к камере)
+    normal: np.ndarray  # единичная нормаль = направление "вверх" в координатах камеры
     height: float  # высота камеры над полом, м
     measured: bool = True  # False — априорная оценка (пол ещё не видели)
 
     def height_above(self, pts: np.ndarray) -> np.ndarray:
         return pts @ self.normal + self.height
 
+    def axes(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Земные оси в координатах камеры: (right, forward, up)."""
+        u = self.normal
+        f = _Z - (_Z @ u) * u  # ось камеры, спроецированная на горизонталь
+        if np.linalg.norm(f) < 0.3:
+            # Камера смотрит почти прямо в пол/небо: "вперёд" — куда смотрит верх картинки
+            f = _IMG_UP - (_IMG_UP @ u) * u
+        f = f / np.linalg.norm(f)
+        return np.cross(f, u), f, u
+
+    def to_ground(self, pts: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """3D-точки камеры -> (X вправо по земле, Z вперёд по земле), метры."""
+        r, f, _ = self.axes()
+        return pts @ r, pts @ f
+
     @property
     def pitch_deg(self) -> float:
-        """Наклон камеры вниз (0 = смотрит горизонтально). Камера смотрит вниз ->
-        вектор "вверх" в её координатах получает отрицательную Z-составляющую."""
+        """Наклон камеры вниз (0 = смотрит горизонтально, > 0 — вниз)."""
         return math.degrees(math.asin(float(np.clip(-self.normal[2], -1, 1))))
+
+    @property
+    def roll_deg(self) -> float:
+        """Завал вбок (0 = горизонт ровный)."""
+        return math.degrees(math.atan2(float(self.normal[0]), float(-self.normal[1])))
 
     @classmethod
     def prior(cls, height: float, pitch_deg: float) -> "GroundPlane":
@@ -48,8 +77,8 @@ class GroundPlane:
 @dataclass
 class GenericObstacle:
     zone: Zone
-    distance_m: float  # расстояние ВПЕРЁД (по оси камеры) до ближайшей точки
-    lateral_m: float  # смещение ближайшей точки вбок от оси (по модулю)
+    distance_m: float  # расстояние ВПЕРЁД по земле до ближайшей точки
+    x_m: float  # смещение ближайшей точки вбок по земле (< 0 — слева)
     box: tuple[int, int, int, int]  # пиксели полного кадра
     area: float  # доля кадра
 
@@ -59,15 +88,30 @@ class FreeSpaceDebug:
     ground: np.ndarray | None = None  # bool-маска на сетке
     obstacles: np.ndarray | None = None  # bool-маска на сетке
     plane: GroundPlane | None = None
+    imu: bool = False  # "вверх" взято с датчика телефона
 
 
-def _fit_plane(pts: np.ndarray, s: Settings, rng: np.random.Generator) -> GroundPlane | None:
-    """RANSAC: плоскость пола среди точек нижней части кадра."""
+def _tolerance(pts: np.ndarray) -> np.ndarray:
+    return 0.04 + 0.03 * pts[:, 2]  # шум глубины растёт с расстоянием
+
+
+def _fit_plane(pts: np.ndarray, s: Settings, rng: np.random.Generator,
+               expected_up: np.ndarray | None) -> GroundPlane | None:
+    """RANSAC: плоскость пола (нормаль и высота), когда "вверх" неизвестно точно.
+
+    expected_up — прошлая оценка "вверх": новая плоскость должна быть близка к ней
+    (иначе это стена или наклонная поверхность). Без неё — ограничение наклона камеры.
+    """
     n = len(pts)
     if n < 50:
         return None
-    min_up = math.cos(math.radians(s.ground_max_tilt_deg))
-    tol = 0.04 + 0.03 * pts[:, 2]  # шум глубины растёт с расстоянием
+
+    def plausible(normal: np.ndarray) -> bool:
+        if expected_up is not None:
+            return float(normal @ expected_up) >= math.cos(math.radians(s.ground_max_change_deg))
+        return -normal[1] >= math.cos(math.radians(s.ground_max_tilt_deg))
+
+    tol = _tolerance(pts)
     best, best_count = None, 0
     for _ in range(s.ground_iterations):
         a, b, c = pts[rng.choice(n, 3, replace=False)]
@@ -78,7 +122,7 @@ def _fit_plane(pts: np.ndarray, s: Settings, rng: np.random.Generator) -> Ground
         normal /= norm
         if normal[1] > 0:  # ось Y камеры смотрит вниз -> нормаль пола должна иметь y < 0
             normal = -normal
-        if -normal[1] < min_up:  # слишком наклонённая плоскость — это стена, не пол
+        if not plausible(normal):
             continue
         d = -normal @ a
         count = int((np.abs(pts @ normal + d) < tol).sum())
@@ -95,12 +139,34 @@ def _fit_plane(pts: np.ndarray, s: Settings, rng: np.random.Generator) -> Ground
     normal = vt[2]
     if normal[1] > 0:
         normal = -normal
-    if -normal[1] < min_up:
+    if not plausible(normal):
         return None
     d = -normal @ centroid
-    if not 0.3 < d < 3.0:  # камера ниже 30 см или выше 3 м над "полом" — ошибка подгонки
+    if not 0.2 < d < 3.0:  # камера ниже 20 см или выше 3 м над "полом" — ошибка подгонки
         return None
     return GroundPlane(normal=normal, height=float(d))
+
+
+def _fit_height(pts: np.ndarray, up: np.ndarray, rng: np.random.Generator) -> float | None:
+    """Направление "вверх" известно (датчик телефона) — ищем только высоту камеры над полом.
+
+    Для каждой точки -(p·up) — высота камеры над ней. Пол даёт самую большую группу
+    одинаковых значений (1D-RANSAC); точки на препятствиях выше пола — меньшие значения.
+    """
+    n = len(pts)
+    if n < 30:
+        return None
+    hs = -(pts @ up)
+    tol = _tolerance(pts)
+    best_h, best_count = None, 0
+    for i in rng.choice(n, min(n, 60), replace=False):
+        count = int((np.abs(hs - hs[i]) < tol).sum())
+        if count > best_count:
+            best_h, best_count = hs[i], count
+    if best_h is None or best_count < 0.25 * n:
+        return None
+    h = float(np.median(hs[np.abs(hs - best_h) < tol]))
+    return h if 0.2 < h < 3.0 else None
 
 
 class FreeSpaceAnalyzer:
@@ -127,9 +193,22 @@ class FreeSpaceAnalyzer:
             self.plane = GroundPlane(normal / np.linalg.norm(normal), (1 - a) * self.plane.height + a * new.height)
         return self.plane
 
+    def _update_with_imu(self, up: np.ndarray, height: float | None) -> GroundPlane:
+        # Наклон — всегда с датчика (мгновенно), высота — сглаженная; пол не виден — прежняя
+        prev = self.plane
+        if height is None:
+            self.plane = GroundPlane(up, prev.height, prev.measured)
+        elif not prev.measured:
+            self.plane = GroundPlane(up, height)
+        else:
+            a = self.s.ground_smoothing
+            self.plane = GroundPlane(up, (1 - a) * prev.height + a * height)
+        return self.plane
+
     def analyze(
-        self, depth_m: np.ndarray, detections: list[Detection]
+        self, depth_m: np.ndarray, detections: list[Detection], up: np.ndarray | None = None
     ) -> tuple[list[GenericObstacle], FreeSpaceDebug]:
+        """up — направление "вверх" в координатах камеры с датчика телефона (если есть)."""
         s = self.s
         H, W = depth_m.shape
         step = max(1, max(W, H) // s.generic_grid_width)
@@ -138,20 +217,33 @@ class FreeSpaceAnalyzer:
         us = (np.arange(gw) * step + step // 2).astype(np.float32)
         vs = (np.arange(gh) * step + step // 2).astype(np.float32)
         f = focal_px(W, H, s.camera_fov_deg)
-        x = (us[None, :] - W / 2) * z / f
-        y = (vs[:, None] - H / 2) * z / f
-        pts = np.stack([x, y, z], axis=-1)  # (gh, gw, 3): X вправо, Y вниз, Z вперёд
+        rx = np.broadcast_to((us[None, :] - W / 2) / f, (gh, gw))
+        ry = np.broadcast_to((vs[:, None] - H / 2) / f, (gh, gw))
+        pts = np.stack([rx * z, ry * z, z], axis=-1)  # (gh, gw, 3): X вправо, Y вниз, Z вперёд
 
-        # Кандидаты в пол: нижние 45% кадра, не дальше 10 м
-        cand = np.zeros((gh, gw), bool)
-        cand[int(gh * 0.55):] = True
-        cand &= (z > 0.2) & (z < 10)
-        plane = self._update_plane(_fit_plane(pts[cand], s, self.rng))
-        dbg = FreeSpaceDebug(plane=plane)
+        # Кандидаты в пол: лучи НИЖЕ горизонта (по текущей оценке "вверх"), не дальше 10 м.
+        # Пока пол ни разу не видели и датчика нет — просто нижние 45% кадра.
+        cand = (z > 0.2) & (z < 10)
+        known_up = up if up is not None else (self.plane.normal if self.plane.measured else None)
+        if known_up is not None:
+            rays = np.stack([rx, ry, np.ones_like(rx)], axis=-1)
+            below = (rays @ known_up) / np.linalg.norm(rays, axis=-1) < -0.1  # ниже горизонта на ~6°
+            cand &= below
+        else:
+            cand[: int(gh * 0.55)] = False
+
+        if up is not None:
+            plane = self._update_with_imu(up, _fit_height(pts[cand], up, self.rng))
+        else:
+            expected = self.plane.normal if self.plane.measured else None
+            plane = self._update_plane(_fit_plane(pts[cand], s, self.rng, expected))
+        dbg = FreeSpaceDebug(plane=plane, imu=up is not None)
 
         h = plane.height_above(pts.reshape(-1, 3)).reshape(gh, gw)
+        X, Zf = plane.to_ground(pts.reshape(-1, 3))
+        X, Zf = X.reshape(gh, gw), Zf.reshape(gh, gw)
         dbg.ground = np.abs(h) < 0.08 + 0.03 * z
-        obst = (h > s.generic_min_height_m) & (h < s.generic_max_height_m) & (z > 0.2) & (z < s.generic_max_range_m)
+        obst = (h > s.generic_min_height_m) & (h < s.generic_max_height_m) & (Zf > 0.2) & (Zf < s.generic_max_range_m)
 
         # Убираем то, что уже нашёл детектор (люди, машины, животные)
         for det in detections:
@@ -170,12 +262,12 @@ class FreeSpaceAnalyzer:
         if not keep.any():
             return [], dbg
 
-        # Зоны в метрах: коридор движения и полосы по бокам
+        # Зоны в метрах по земле: коридор движения и полосы по бокам
         half = s.corridor_half_width_m
         zone_masks = {
-            "center": keep & (np.abs(x) < half),
-            "left": keep & (x <= -half) & (x > -s.generic_side_max_m),
-            "right": keep & (x >= half) & (x < s.generic_side_max_m),
+            "center": keep & (np.abs(X) < half),
+            "left": keep & (X <= -half) & (X > -s.generic_side_max_m),
+            "right": keep & (X >= half) & (X < s.generic_side_max_m),
         }
         result: list[GenericObstacle] = []
         for zone in ZONES:
@@ -183,9 +275,9 @@ class FreeSpaceAnalyzer:
             # В узком коридоре вдали мало ячеек — порог площади для него мягче
             if zm.sum() < (min_cells / 4 if zone == "center" else min_cells / 2):
                 continue
-            zd = z[zm]
+            zd = Zf[zm]
             dist = float(np.percentile(zd, 10))
-            near = zm & (z <= np.percentile(zd, 30))  # ближняя часть — для рамки и смещения
+            near = zm & (Zf <= np.percentile(zd, 30))  # ближняя часть — для рамки и смещения
             rows, cols = np.nonzero(near)
             box = (
                 int(cols.min() * step),
@@ -193,6 +285,7 @@ class FreeSpaceAnalyzer:
                 int(min(W, (cols.max() + 1) * step)),
                 int(min(H, (rows.max() + 1) * step)),
             )
-            lateral = float(np.min(np.abs(x[near])))
-            result.append(GenericObstacle(zone, dist, lateral, box, float(zm.sum()) / (gh * gw)))
+            xs = X[near]
+            x_near = float(xs[np.argmin(np.abs(xs))])
+            result.append(GenericObstacle(zone, dist, x_near, box, float(zm.sum()) / (gh * gw)))
         return result, dbg

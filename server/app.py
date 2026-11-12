@@ -20,7 +20,7 @@ from pydantic import ValidationError
 
 from spatia import Engine, Session, Settings
 from spatia.config import SERVER_DIR
-from spatia.protocol import Config, Error, Hello, Ready, Result, parse_frame
+from spatia.protocol import Config, Error, Hello, Pose, Ready, Result, parse_frame
 from spatia.schemas import Group, Obstacle
 
 WEB_DIST = SERVER_DIR.parent / "mobile" / "dist"
@@ -48,17 +48,17 @@ class FrameSlot:
     """Хранит только самый свежий кадр: если пришёл новый, пока старый ждал, старый выбрасываем."""
 
     def __init__(self) -> None:
-        self.item: tuple[int, bytes] | None = None
+        self.item: tuple[int, bytes, np.ndarray | None] | None = None
         self.event = asyncio.Event()
         self.dropped = 0
 
-    def put(self, seq: int, jpeg: bytes) -> None:
+    def put(self, seq: int, jpeg: bytes, up: np.ndarray | None) -> None:
         if self.item is not None:
             self.dropped += 1
-        self.item = (seq, jpeg)
+        self.item = (seq, jpeg, up)
         self.event.set()
 
-    async def take(self) -> tuple[int, bytes]:
+    async def take(self) -> tuple[int, bytes, np.ndarray | None]:
         await self.event.wait()
         self.event.clear()
         item, self.item = self.item, None
@@ -66,7 +66,7 @@ class FrameSlot:
         return item
 
 
-def process_jpeg(session: Session, jpeg: bytes) -> tuple[list[Obstacle], list[Group], list[str]] | None:
+def process_jpeg(session: Session, jpeg: bytes, up: np.ndarray | None) -> tuple[list[Obstacle], list[Group], list[str]] | None:
     frame = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
     if frame is None:
         return None
@@ -74,7 +74,7 @@ def process_jpeg(session: Session, jpeg: bytes) -> tuple[list[Obstacle], list[Gr
     if max(frame.shape[:2]) > max_side:
         k = max_side / max(frame.shape[:2])
         frame = cv2.resize(frame, (round(frame.shape[1] * k), round(frame.shape[0] * k)), interpolation=cv2.INTER_AREA)
-    obstacles, dbg = session.process(frame)
+    obstacles, dbg = session.process(frame, up=up)
     if DEBUG_MOVING:
         for o in dbg.objects:
             if o.moving and o.threat:
@@ -91,10 +91,10 @@ async def send(ws: WebSocket, msg) -> None:
 async def process_loop(ws: WebSocket, session: Session, slot: FrameSlot) -> None:
     loop = asyncio.get_running_loop()
     while True:
-        seq, jpeg = await slot.take()
+        seq, jpeg, up = await slot.take()
         t0 = loop.time()
         try:
-            out = await loop.run_in_executor(gpu, process_jpeg, session, jpeg)
+            out = await loop.run_in_executor(gpu, process_jpeg, session, jpeg, up)
         except Exception as e:  # ошибка одного кадра не должна убивать сессию
             print(f"[server] ошибка обработки кадра {seq}: {e!r}")
             await send(ws, Error(message=f"ошибка обработки кадра {seq}"))
@@ -132,6 +132,7 @@ async def websocket_endpoint(ws: WebSocket):
     await send(ws, Ready(session=sid))
 
     slot = FrameSlot()
+    pose_up: np.ndarray | None = None  # ориентация телефона для следующего кадра
     worker = asyncio.create_task(process_loop(ws, session, slot))
     try:
         while True:
@@ -140,10 +141,19 @@ async def websocket_endpoint(ws: WebSocket):
                 break
             if msg.get("bytes") is not None:
                 try:
-                    slot.put(*parse_frame(msg["bytes"]))
+                    slot.put(*parse_frame(msg["bytes"]), pose_up)
+                    pose_up = None  # ориентация относится только к этому кадру
                 except ValueError as e:
                     await send(ws, Error(message=str(e)))
             elif msg.get("text") is not None:
+                if msg["text"].startswith('{"type":"pose"'):  # частое сообщение — без лишних попыток разбора
+                    try:
+                        v = np.array(Pose.model_validate_json(msg["text"]).up, dtype=np.float64)
+                        n = np.linalg.norm(v)
+                        pose_up = v / n if 0.5 < n < 1.5 else None  # мусор — игнорируем
+                    except ValidationError:
+                        pose_up = None
+                    continue
                 try:
                     cfg = Config.model_validate_json(msg["text"])
                 except ValidationError:

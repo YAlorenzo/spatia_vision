@@ -66,7 +66,8 @@ export type WarnReason = "moving" | "coming" | "path" | "side";
 
 export function warnReason(o: Obstacle): WarnReason {
   if (o.moving) return "moving";
-  if (o.own_speed > 0.5) return "coming"; // сам идёт к тебе
+  // сам идёт к тебе (машина либо едет, либо стоит — "идёт к вам" для неё не бывает)
+  if (o.own_speed > 0.5 && o.kind !== "vehicle") return "coming";
   if (o.in_path) return "path";
   return "side";
 }
@@ -78,7 +79,7 @@ export function warnRu(o: Obstacle): string {
   const m = metersRu(o.distance);
   switch (warnReason(o)) {
     case "moving":
-      return o.kind === "vehicle" ? `Едет ${cls.toLowerCase()} ${where}, ${m}` : `${cls} быстро движется ${where}, ${m}`;
+      return o.kind === "vehicle" ? `Едет ${cls.toLowerCase()} ${where}, ${m}` : `${cls} бежит ${where}, ${m}`;
     case "coming":
       return `${cls} идёт к вам ${where}, ${m}`;
     default:

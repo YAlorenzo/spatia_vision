@@ -47,23 +47,25 @@ class ThreatAssessor:
         for o in objects:
             d = o.distance.smoothed_m
             b = math.radians(o.bearing_deg)
+            # forward_m / lateral_m уже посчитаны конвейером в земных осях (с учётом наклона телефона)
             if o.kind == "obstacle":
-                # Для препятствий по глубине всё уже в метрах: дистанция = вперёд по оси камеры
-                o.forward_m = d
                 o.in_path = o.zone == "center"
                 o.own_speed_mps = 0.0
             else:
-                o.forward_m = d * math.cos(b)
                 x1, _, x2, _ = o.detection.box
-                half_w = (x2 - x1) / 2 * o.forward_m / focal
-                o.lateral_m = abs(d * math.sin(b))
+                half_w = (x2 - x1) / 2 * d / focal
                 o.in_path = o.lateral_m - half_w < s.corridor_half_width_m
                 o.zone = "center" if o.in_path else "left" if o.bearing_deg < 0 else "right"
                 # Собственная скорость = относительная - вклад движения пользователя вдоль луча,
                 # сглаженная по объекту: одиночные выбросы не должны давать "едет"
                 k = _key(o)
                 if o.motion_valid:
-                    raw = o.approach_mps - ego_speed * math.cos(b)
+                    # Для людей считаем, что пользователь идёт хотя бы обычным шагом: оценка его
+                    # скорости по картинке бывает занижена (ночь, блестящий пол), и тогда каждый
+                    # идущий навстречу пешеход выглядит "бегущим". Машинам это не нужно — их порог
+                    # выше и ошибка в 1 м/с не делает стоящую машину едущей.
+                    ego = ego_speed if o.kind == "vehicle" else max(ego_speed, s.assumed_walk_mps)
+                    raw = o.approach_mps - ego * math.cos(b)
                     prev = self.own_speed.get(k, raw)
                     self.own_speed[k] = prev + s.own_speed_smoothing * (raw - prev)
                     # Поперёк: ходьба пользователя прямо почти не даёт боковой скорости
@@ -98,7 +100,7 @@ class ThreatAssessor:
                     t_cpa = -(x * vx + z * vz) / v2
                     cpa = math.hypot(x + vx * t_cpa, z + vz * t_cpa)
                     x1, _, x2, _ = o.detection.box
-                    half_w = (x2 - x1) / 2 * o.forward_m / focal
+                    half_w = (x2 - x1) / 2 * d / focal
                     if 0 < t_cpa < s.primary_max_ttc_s and cpa < half_w + s.corridor_half_width_m + s.cpa_margin_m:
                         ttc = t_cpa
             if ttc is None and o.in_path and not receding and not o.moving and o.forward_m <= s.path_max_range_m:
