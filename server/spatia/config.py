@@ -22,27 +22,28 @@ KNOWN_HEIGHTS_M: dict[str, float] = {
     "horse": 1.60,
     "cow": 1.40,
     "train": 3.80,
-    "refrigerator": 1.75,
-    "dining table": 0.75,
-    "parking meter": 1.30,
 }
 
-# Классы COCO, во что человек может врезаться / что важно озвучить.
-# Мелочь (чашки, телефоны, еда) и то, что не встречается на пути, исключены.
-OBSTACLE_CLASSES: frozenset[str] = frozenset({
-    # люди и транспорт
-    "person", "bicycle", "car", "motorcycle", "bus", "train", "truck",
-    "skateboard",
-    # уличная инфраструктура
-    "traffic light", "fire hydrant", "stop sign", "parking meter", "bench",
-    # животные
-    "dog", "cat", "horse", "sheep", "cow", "bird",
-    # вещи на полу / в руках у людей рядом
-    "backpack", "umbrella", "handbag", "suitcase",
-    # мебель и крупная техника
-    "chair", "couch", "potted plant", "bed", "dining table", "toilet",
-    "tv", "sink", "refrigerator", "oven", "microwave", "vase",
-})
+# Детектор ищет только то, что может ДВИГАТЬСЯ — для них важно знать, кто это,
+# и следить за скоростью. Всё статичное (деревья, столбы, стены, мебель)
+# находится без классов по карте глубины (spatia/free_space.py).
+DYNAMIC_CLASSES: dict[str, str] = {
+    "person": "person",
+    "bicycle": "vehicle",
+    "motorcycle": "vehicle",
+    "car": "vehicle",
+    "bus": "vehicle",
+    "truck": "vehicle",
+    "train": "vehicle",
+    "dog": "animal",
+    "cat": "animal",
+    "horse": "animal",
+    "cow": "animal",
+    "sheep": "animal",
+}
+
+# Класс, под которым уходят препятствия, найденные по глубине
+GENERIC_CLASS = "obstacle"
 
 Scene = Literal["outdoor", "indoor"]
 
@@ -62,7 +63,7 @@ class Settings:
     yolo_imgsz: int = 640
     use_tracking: bool = True  # ByteTrack: стабильные ID объектов между кадрами
     max_frame_width: int = 960  # кадры шире ужимаем (защита от огромных фото)
-    obstacle_classes: frozenset[str] = OBSTACLE_CLASSES
+    dynamic_classes: dict[str, str] = field(default_factory=lambda: dict(DYNAMIC_CLASSES))
 
     # --- Глубина ---
     depth_model_id: str = DEPTH_MODELS["outdoor"]
@@ -87,6 +88,27 @@ class Settings:
     smoothing: bool = True
     smoothing_alpha: float = 0.35  # 0..1, меньше = плавнее, но медленнее реакция
     track_ttl_frames: int = 30  # сколько кадров помнить пропавший объект
+
+    # --- Препятствия по глубине (без классов) ---
+    generic_obstacles: bool = True
+    generic_grid_width: int = 160  # карта глубины ужимается до этой ширины для анализа
+    generic_max_range_m: float = 5.0  # дальше — не интересно для навигации
+    generic_min_height_m: float = 0.25  # ниже — бордюр/неровность пола, не препятствие
+    generic_max_height_m: float = 2.0  # выше — над головой, не мешает
+    generic_min_area: float = 0.004  # минимальная доля кадра, чтобы не реагировать на шум
+    # Оценка плоскости пола (RANSAC по нижней части кадра)
+    ground_iterations: int = 80
+    ground_max_tilt_deg: float = 55.0  # насколько камера может быть наклонена к полу
+    ground_smoothing: float = 0.3  # EMA плоскости пола между кадрами
+    ground_ttl_frames: int = 15  # сколько кадров держать старую плоскость, если не нашли новую
+
+    # --- Движение ---
+    motion_window_s: float = 1.0  # окно для оценки скорости сближения
+    motion_max_range_m: float = 15.0  # дальше скорость не оцениваем (шум глубины)
+    motion_noise_frac: float = 0.15  # кажущаяся скорость от шума ~ 15% дистанции в секунду
+    moving_speed_mps: float = 2.5  # сближение быстрее — объект сам едет навстречу (быстрее шага)
+    ttc_high_s: float = 3.0  # время до столкновения меньше — "high"
+    ttc_medium_s: float = 6.0  # меньше — "medium"
 
     # --- Пространство ---
     near_m: float = 2.0  # ближе — "high"

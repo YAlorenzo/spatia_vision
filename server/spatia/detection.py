@@ -17,7 +17,7 @@ class Detector:
         self.device = device
         self.model = YOLO(str(settings.yolo_weights))
         self.names: dict[int, str] = self.model.names
-        self.allowed_ids = [i for i, n in self.names.items() if n in settings.obstacle_classes]
+        self.allowed_ids = [i for i, n in self.names.items() if n in settings.dynamic_classes]
 
     def detect(self, frame_bgr: np.ndarray):
         """Возвращает ultralytics Boxes (numpy) — их понимает и трекер."""

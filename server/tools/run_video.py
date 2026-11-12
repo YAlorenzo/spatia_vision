@@ -38,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--indoor", action="store_true", help="Depth Anything Indoor (до 20 м)")
     p.add_argument("--hfov", type=float, default=None, help="Горизонтальный FOV камеры, град.")
     p.add_argument("--max-frames", type=int, default=0)
+    p.add_argument("--width", type=int, default=640, help="Ужимать кадр до этой ширины (как телефон), 0 — не ужимать")
     p.add_argument("--name", default=None, help="Имя папки в output/")
     p.add_argument("--show", action="store_true")
     p.add_argument("--no-video", action="store_true", help="Не писать annotated.mp4")
@@ -55,30 +56,55 @@ def depth_panel(depth_map: np.ndarray) -> np.ndarray:
     return vis
 
 
+def _tint(img: np.ndarray, grid_mask: np.ndarray | None, color: tuple[int, int, int], alpha: float) -> None:
+    """Подкрашивает пиксели, попавшие в маску на сетке анализа глубины."""
+    if grid_mask is None or not grid_mask.any():
+        return
+    h, w = img.shape[:2]
+    m = cv2.resize(grid_mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+    img[m] = (img[m] * (1 - alpha) + np.array(color) * alpha).astype(np.uint8)
+
+
+def _text(img: np.ndarray, text: str, org: tuple[int, int], color, scale: float = 0.5) -> None:
+    cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), 4)
+    cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, color, 1)
+
+
 def annotate(frame: np.ndarray, dbg: FrameDebug, label: str) -> np.ndarray:
     out = frame.copy()
     h, w = out.shape[:2]
+    fs = dbg.free_space
+    if fs is not None:
+        _tint(out, fs.ground, (80, 200, 80), 0.25)  # пол — зелёный
+        _tint(out, fs.obstacles, (200, 60, 200), 0.45)  # препятствия по глубине — фиолетовый
     for x in (w // 3, 2 * w // 3):
         cv2.line(out, (x, 0), (x, h), (255, 255, 255), 1)
     for o in dbg.objects:
         x1, y1, x2, y2 = o.detection.box
         color = URGENCY_COLORS[o.urgency]
-        cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
+        cv2.rectangle(out, (x1, y1), (x2, y2), color, 2 if o.kind != "obstacle" else 3)
         d = o.distance
-        tid = "" if o.detection.track_id is None else f"#{o.detection.track_id} "
+        tid = "" if o.detection.track_id is None or o.detection.track_id < 0 else f"#{o.detection.track_id} "
         main = f"{tid}{o.detection.cls} {d.smoothed_m:.1f}m {o.zone}"
+        if o.approach_mps > 0.3:
+            main += f" ->{o.approach_mps:.1f}m/s"
+            if o.ttc_s is not None:
+                main += f" ttc {o.ttc_s:.0f}s"
+        if o.moving:
+            main += " MOVING"
         sub = f"d={d.depth_m:.1f}" if d.depth_m is not None else "d=-"
         sub += f" g={d.geometry_m:.1f}" if d.geometry_m is not None else " g=-"
         ty = max(18, y1 - 24)
-        for i, text in enumerate((main, sub)):
-            org = (x1, ty + i * 18)
-            cv2.putText(out, text, org, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 4)
-            cv2.putText(out, text, org, cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+        _text(out, main, (x1, ty), color)
+        _text(out, sub, (x1, ty + 18), color)
     t = dbg.timings_ms
-    hud = (f"{label} | scale x{dbg.depth_scale:.2f} | det {t['detect']:.0f}ms "
-           f"depth {t['depth']:.0f}ms total {t['total']:.0f}ms")
-    cv2.putText(out, hud, (10, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 4)
-    cv2.putText(out, hud, (10, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+    hud = (f"{label} | scale x{dbg.depth_scale:.2f} | det {t['detect']:.0f} depth {t['depth']:.0f} "
+           f"free {t.get('free', 0):.0f} total {t['total']:.0f}ms")
+    if fs is not None and fs.plane is not None:
+        hud += f" | cam {fs.plane.height:.2f}m pitch {fs.plane.pitch_deg:.0f}deg"
+    elif fs is not None:
+        hud += " | floor: not found"
+    _text(out, hud, (10, h - 12), (255, 255, 255), 0.55)
     return out
 
 
@@ -134,7 +160,10 @@ def main() -> None:
         src_pos += 1
         if not ok or (args.max_frames and i >= args.max_frames):
             break
-        obstacles, dbg = session.process(frame)
+        if args.width and frame.shape[1] > args.width:  # как на сервере: клиент шлёт ~640px
+            frame = cv2.resize(frame, (args.width, round(frame.shape[0] * args.width / frame.shape[1])),
+                               interpolation=cv2.INTER_AREA)
+        obstacles, dbg = session.process(frame, timestamp=None if is_webcam else src_pos / fps_in)
         if i >= 5:  # первые кадры — прогрев CUDA
             timings.append(dbg.timings_ms["total"])
         scales.append(dbg.depth_scale)
@@ -153,6 +182,10 @@ def main() -> None:
                 "fused_m": round(d.fused_m, 3),
                 "smoothed_m": round(d.smoothed_m, 3),
                 "urgency": o.urgency,
+                "kind": o.kind,
+                "approach_mps": o.approach_mps,
+                "ttc_s": o.ttc_s,
+                "moving": o.moving,
             })
             if o.detection.track_id is not None:
                 tr = per_track[o.detection.track_id]

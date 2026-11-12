@@ -48,11 +48,14 @@ export const ObstacleOverlay = ({ obstacles, frameSize }: Props) => {
                 width: (x2 - x1) * fw,
                 height: (y2 - y1) * fh,
                 borderColor: color,
+                // препятствия по глубине (без класса) — пунктиром и с заливкой
+                borderStyle: o.kind === "obstacle" ? "dashed" : "solid",
+                backgroundColor: o.kind === "obstacle" ? `${color}22` : "transparent",
               }}
             >
               <View className="absolute -top-6 left-0 rounded px-1.5 py-0.5" style={{ backgroundColor: color }}>
                 <Text className="text-xs font-bold text-black" numberOfLines={1}>
-                  {classLabel(o.cls)} {o.distance.toFixed(1)} м
+                  {classLabel(o.cls)} {o.distance.toFixed(1)} м{o.moving ? " · едет" : ""}
                 </Text>
               </View>
             </View>

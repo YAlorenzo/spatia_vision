@@ -1,8 +1,12 @@
 """Конвейер: кадр -> препятствия.
 
 Engine  — тяжёлые модели (YOLO, глубина), загружаются один раз на сервер.
-Session — состояние одного клиента (трекинг, сглаживание, калибровка, настройки камеры).
+Session — состояние одного клиента (трекинг, сглаживание, калибровка, пол, движение).
 Используется и WebSocket-сервером, и tools/run_video.py.
+
+Два источника препятствий:
+  1. Детектор — люди, транспорт, животные (то, что может двигаться).
+  2. Карта глубины — всё остальное, без классов (деревья, столбы, стены...).
 """
 import dataclasses
 import threading
@@ -12,10 +16,12 @@ import numpy as np
 import torch
 
 from . import distance as dist
-from .config import DEPTH_MODELS, Scene, Settings
+from .config import DEPTH_MODELS, GENERIC_CLASS, Scene, Settings
 from .depth import DepthEstimator
 from .detection import Detector, Tracker
-from .schemas import DistanceEstimate, FrameDebug, Obstacle, TrackedObject
+from .free_space import ZONES, FreeSpaceAnalyzer
+from .motion import MotionEstimator
+from .schemas import Detection, DistanceEstimate, FrameDebug, Kind, Obstacle, TrackedObject
 from .spatial import urgency, zone_and_pan
 
 
@@ -51,11 +57,13 @@ class Session:
         self.tracker = Tracker(engine.detector.names) if self.s.use_tracking else None
         self.smoother = dist.DistanceSmoother(self.s)
         self.calibrator = dist.DepthScaleCalibrator(self.s)
+        self.free_space = FreeSpaceAnalyzer(self.s)
+        self.motion = MotionEstimator(self.s)
         self.frame_idx = 0
         self.configure(scene=scene, hfov_deg=hfov_deg)
 
     def configure(self, scene: Scene | None = None, hfov_deg: float | None = None) -> None:
-        """Смена сцены/камеры. Калибровку масштаба сбрасываем — она зависит от модели и FOV."""
+        """Смена сцены/камеры. Калибровку и пол сбрасываем — они зависят от модели и FOV."""
         changed = False
         if scene is not None and DEPTH_MODELS[scene] != self.s.depth_model_id:
             self.s.depth_model_id = DEPTH_MODELS[scene]
@@ -65,9 +73,12 @@ class Session:
             changed = True
         if changed:
             self.calibrator.reset()
+            self.free_space.reset()
         self.depth = self.engine.depth(self.s.depth_model_id)
 
-    def process(self, frame_bgr: np.ndarray) -> tuple[list[Obstacle], FrameDebug]:
+    def process(self, frame_bgr: np.ndarray, timestamp: float | None = None) -> tuple[list[Obstacle], FrameDebug]:
+        """timestamp — время кадра в секундах (для скорости). По умолчанию — текущее."""
+        t_frame = time.monotonic() if timestamp is None else timestamp
         t0 = time.perf_counter()
         boxes = self.engine.detector.detect(frame_bgr)
         if self.tracker is not None:
@@ -89,34 +100,56 @@ class Session:
         self.calibrator.update([(d, g) for _, d, g in raw if d is not None and g is not None])
         scale = self.calibrator.scale
 
-        objects: list[TrackedObject] = []
+        candidates: list[tuple[Detection, Kind, float | None, float | None]] = []
         for det, depth_m, geom_m in raw:
-            if depth_m is not None:
-                depth_m *= scale
+            kind: Kind = self.s.dynamic_classes.get(det.cls, "obstacle")  # type: ignore[assignment]
+            candidates.append((det, kind, None if depth_m is None else depth_m * scale, geom_m))
+
+        # Препятствия без классов по карте глубины (одно ближайшее на зону)
+        free_dbg = None
+        if self.s.generic_obstacles:
+            generic, free_dbg = self.free_space.analyze(depth_map * scale, detections)
+            for g in generic:
+                det = Detection(track_id=-(ZONES.index(g.zone) + 1), cls=GENERIC_CLASS,
+                                conf=min(1.0, round(g.area * 20, 2)), box=g.box)
+                candidates.append((det, "obstacle", g.distance_m, None))
+        t3 = time.perf_counter()
+
+        objects: list[TrackedObject] = []
+        for det, kind, depth_m, geom_m in candidates:
             fused = dist.fuse(depth_m, geom_m, self.s)
             if fused is None:
                 continue
             fused = min(max(fused, self.s.min_distance_m), self.s.max_distance_m)
             smoothed = self.smoother.update(det.track_id, fused, self.frame_idx)
+            motion = self.motion.update(det.track_id, t_frame, smoothed)
             zone, pan = zone_and_pan(det.box, fw)
             objects.append(TrackedObject(
                 detection=det,
+                kind=kind,
                 distance=DistanceEstimate(depth_m, geom_m, fused, smoothed),
                 zone=zone,
                 pan=pan,
-                urgency=urgency(smoothed, self.s),
+                urgency=urgency(smoothed, motion.ttc_s, self.s),
+                approach_mps=motion.approach_mps,
+                ttc_s=motion.ttc_s,
+                moving=motion.moving,
             ))
         objects.sort(key=lambda o: o.distance.smoothed_m)
-        t3 = time.perf_counter()
+        t4 = time.perf_counter()
 
         obstacles = [
             Obstacle(
                 id=o.detection.track_id,
+                kind=o.kind,
                 cls=o.detection.cls,
                 zone=o.zone,
                 pan=o.pan,
                 distance=round(o.distance.smoothed_m, 2),
                 urgency=o.urgency,
+                approach=o.approach_mps,
+                ttc=o.ttc_s,
+                moving=o.moving,
                 conf=round(o.detection.conf, 2),
                 box=(
                     round(o.detection.box[0] / fw, 3),
@@ -131,11 +164,13 @@ class Session:
             objects=objects,
             depth_map=depth_map,
             depth_scale=scale,
+            free_space=free_dbg,
             timings_ms={
                 "detect": (t1 - t0) * 1000,
                 "depth": (t2 - t1) * 1000,
-                "post": (t3 - t2) * 1000,
-                "total": (t3 - t0) * 1000,
+                "free": (t3 - t2) * 1000,
+                "post": (t4 - t3) * 1000,
+                "total": (t4 - t0) * 1000,
             },
         )
         self.frame_idx += 1

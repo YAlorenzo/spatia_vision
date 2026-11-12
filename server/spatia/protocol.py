@@ -11,6 +11,12 @@
 Сервер -> клиент
   text   {"type":"ready", "v":1, "session":"…", "max_width":640}
   text   {"type":"result", "seq":42, "obstacles":[…], "server_ms":65.3, "dropped":0}
+         obstacle: {"id":6, "kind":"person|vehicle|animal|obstacle", "cls":"person",
+                    "zone":"left|center|right", "pan":-0.4, "distance":3.2,
+                    "urgency":"high|medium|low", "approach":1.1, "ttc":2.9,
+                    "moving":false, "conf":0.8, "box":[x1,y1,x2,y2]}
+         kind=obstacle — найдено по карте глубины без класса (дерево, столб, стена...),
+         id -1/-2/-3 = ближайшее препятствие в зоне слева/прямо/справа.
   text   {"type":"error", "message":"…"}
 """
 import struct

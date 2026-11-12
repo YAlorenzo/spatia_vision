@@ -6,6 +6,7 @@ import type { Scene } from "../api/protocol";
 import { getServerUrl } from "../api/serverUrl";
 import { StreamStatus, useServerStream } from "../api/useServerStream";
 import { ObstacleOverlay } from "../components/ObstacleOverlay";
+import { useAudioFeedback } from "../audio/useAudioFeedback";
 import { describe, URGENCY_COLOR } from "../components/labels";
 
 // CameraView — сторонний компонент, NativeWind должен знать, что className -> style
@@ -33,6 +34,8 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
   const cameraRef = useRef<CameraView | null>(null);
   const [cameraReady, setCameraReady] = useState(false);
   const [scene, setScene] = useState<Scene>("outdoor");
+  const [beeps, setBeeps] = useState(true);
+  const [speech, setSpeech] = useState(true);
   const url = useMemo(() => getServerUrl(), []);
 
   const { status, obstacles, stats, frameSize, error } = useServerStream({
@@ -42,6 +45,8 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
     enabled: true,
     scene,
   });
+
+  useAudioFeedback({ obstacles, active: status === "streaming", beeps, speech });
 
   const nearest = obstacles[0];
 
@@ -70,16 +75,36 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
           )}
         </View>
 
-        <View className="flex-row self-start rounded-2xl bg-black/60 p-1">
-          {(["outdoor", "indoor"] as const).map((s) => (
-            <TouchableOpacity
-              key={s}
-              onPress={() => setScene(s)}
-              className={`rounded-xl px-4 py-1.5 ${scene === s ? "bg-blue-500" : ""}`}
-            >
-              <Text className="text-white font-semibold">{s === "outdoor" ? "Улица" : "Помещение"}</Text>
-            </TouchableOpacity>
-          ))}
+        <View className="flex-row flex-wrap gap-2">
+          <View className="flex-row rounded-2xl bg-black/60 p-1">
+            {(["outdoor", "indoor"] as const).map((s) => (
+              <TouchableOpacity
+                key={s}
+                onPress={() => setScene(s)}
+                className={`rounded-xl px-4 py-1.5 ${scene === s ? "bg-blue-500" : ""}`}
+                accessibilityRole="button"
+                accessibilityState={{ selected: scene === s }}
+              >
+                <Text className="text-white font-semibold">{s === "outdoor" ? "Улица" : "Помещение"}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <View className="flex-row rounded-2xl bg-black/60 p-1">
+            {[
+              { label: "Звук", on: beeps, toggle: () => setBeeps((v) => !v) },
+              { label: "Голос", on: speech, toggle: () => setSpeech((v) => !v) },
+            ].map((t) => (
+              <TouchableOpacity
+                key={t.label}
+                onPress={t.toggle}
+                className={`rounded-xl px-4 py-1.5 ${t.on ? "bg-emerald-600" : ""}`}
+                accessibilityRole="switch"
+                accessibilityState={{ checked: t.on }}
+              >
+                <Text className={`font-semibold ${t.on ? "text-white" : "text-zinc-400 line-through"}`}>{t.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
         </View>
 
         {error && status !== "streaming" && (

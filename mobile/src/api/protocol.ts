@@ -6,14 +6,20 @@ export const FRAME_HEADER_BYTES = 4; // uint32 big-endian: seq
 export type Scene = "outdoor" | "indoor";
 export type Zone = "left" | "center" | "right";
 export type Urgency = "high" | "medium" | "low";
+/** person/vehicle/animal — по детектору; obstacle — по карте глубины, без класса */
+export type Kind = "person" | "vehicle" | "animal" | "obstacle";
 
 export interface Obstacle {
-  id: number | null;
+  id: number | null; // для obstacle: -1/-2/-3 = зона слева/прямо/справа
+  kind: Kind;
   cls: string;
   zone: Zone;
   pan: number; // -1 (слева) .. 1 (справа)
   distance: number; // метры
   urgency: Urgency;
+  approach: number; // скорость сближения, м/с (> 0 — приближается)
+  ttc: number | null; // время до столкновения, с
+  moving: boolean; // сближается быстрее шага — движется сам
   conf: number;
   box: [number, number, number, number]; // x1, y1, x2, y2 в долях кадра
 }
