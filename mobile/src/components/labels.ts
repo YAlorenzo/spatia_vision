@@ -1,44 +1,20 @@
-import type { Obstacle, Urgency, Zone } from "../api/protocol";
+import type { Obstacle, Urgency } from "../api/protocol";
 
 const CLASS_RU: Record<string, string> = {
   person: "Человек",
   bicycle: "Велосипед",
-  car: "Машина",
   motorcycle: "Мотоцикл",
+  car: "Машина",
   bus: "Автобус",
-  train: "Поезд",
   truck: "Грузовик",
-  skateboard: "Скейтборд",
-  "traffic light": "Светофор",
-  "fire hydrant": "Гидрант",
-  "stop sign": "Знак стоп",
-  "parking meter": "Паркомат",
-  bench: "Скамейка",
+  train: "Поезд",
   dog: "Собака",
   cat: "Кошка",
   horse: "Лошадь",
-  sheep: "Овца",
   cow: "Корова",
-  bird: "Птица",
-  backpack: "Рюкзак",
-  umbrella: "Зонт",
-  handbag: "Сумка",
-  suitcase: "Чемодан",
-  chair: "Стул",
-  couch: "Диван",
-  "potted plant": "Растение",
-  bed: "Кровать",
-  "dining table": "Стол",
-  toilet: "Унитаз",
-  tv: "Телевизор",
-  sink: "Раковина",
-  refrigerator: "Холодильник",
-  oven: "Плита",
-  microwave: "Микроволновка",
-  vase: "Ваза",
+  sheep: "Овца",
+  obstacle: "Препятствие",
 };
-
-const ZONE_RU: Record<Zone, string> = { left: "слева", center: "прямо", right: "справа" };
 
 export const URGENCY_COLOR: Record<Urgency, string> = {
   high: "#ef4444",
@@ -48,5 +24,23 @@ export const URGENCY_COLOR: Record<Urgency, string> = {
 
 export const classLabel = (cls: string) => CLASS_RU[cls] ?? cls;
 
-export const describe = (o: Obstacle) =>
-  `${classLabel(o.cls)}, ${o.distance.toFixed(1)} м, ${ZONE_RU[o.zone]}`;
+/** "1 метр", "3 метра", "5 метров", "полтора метра", "меньше метра" — для речи и экрана. */
+export function metersRu(d: number): string {
+  if (d < 0.9) return "меньше метра";
+  if (d < 1.25) return "1 метр";
+  if (d < 1.75) return "полтора метра";
+  const n = Math.round(d);
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return `${n} метр`;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return `${n} метра`;
+  return `${n} метров`;
+}
+
+/** Где объект относительно пользователя: в коридоре движения — "впереди". */
+export const whereRu = (o: Obstacle) => (o.in_path ? "впереди" : o.bearing < 0 ? "слева" : "справа");
+
+/** Короткая фраза для экрана: "Препятствие впереди, 3 метра". */
+export function describe(o: Obstacle): string {
+  return `${classLabel(o.cls)}${o.moving ? " едет" : ""} ${whereRu(o)}, ${metersRu(o.distance)}`;
+}

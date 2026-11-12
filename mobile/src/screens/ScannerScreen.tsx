@@ -6,6 +6,7 @@ import type { Scene } from "../api/protocol";
 import { getServerUrl } from "../api/serverUrl";
 import { StreamStatus, useServerStream } from "../api/useServerStream";
 import { ObstacleOverlay } from "../components/ObstacleOverlay";
+import { useAudioFeedback } from "../audio/useAudioFeedback";
 import { describe, URGENCY_COLOR } from "../components/labels";
 
 // CameraView — сторонний компонент, NativeWind должен знать, что className -> style
@@ -33,6 +34,8 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
   const cameraRef = useRef<CameraView | null>(null);
   const [cameraReady, setCameraReady] = useState(false);
   const [scene, setScene] = useState<Scene>("outdoor");
+  const [beeps, setBeeps] = useState(true);
+  const [speech, setSpeech] = useState(true);
   const url = useMemo(() => getServerUrl(), []);
 
   const { status, obstacles, stats, frameSize, error } = useServerStream({
@@ -43,7 +46,10 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
     scene,
   });
 
-  const nearest = obstacles[0];
+  useAudioFeedback({ obstacles, active: status === "streaming", beeps, speech });
+
+  const primary = obstacles.find((o) => o.primary);
+  const otherThreats = obstacles.filter((o) => o.threat && !o.primary).length;
 
   return (
     <View className="flex-1 bg-zinc-950">
@@ -70,16 +76,36 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
           )}
         </View>
 
-        <View className="flex-row self-start rounded-2xl bg-black/60 p-1">
-          {(["outdoor", "indoor"] as const).map((s) => (
-            <TouchableOpacity
-              key={s}
-              onPress={() => setScene(s)}
-              className={`rounded-xl px-4 py-1.5 ${scene === s ? "bg-blue-500" : ""}`}
-            >
-              <Text className="text-white font-semibold">{s === "outdoor" ? "Улица" : "Помещение"}</Text>
-            </TouchableOpacity>
-          ))}
+        <View className="flex-row flex-wrap gap-2">
+          <View className="flex-row rounded-2xl bg-black/60 p-1">
+            {(["outdoor", "indoor"] as const).map((s) => (
+              <TouchableOpacity
+                key={s}
+                onPress={() => setScene(s)}
+                className={`rounded-xl px-4 py-1.5 ${scene === s ? "bg-blue-500" : ""}`}
+                accessibilityRole="button"
+                accessibilityState={{ selected: scene === s }}
+              >
+                <Text className="text-white font-semibold">{s === "outdoor" ? "Улица" : "Помещение"}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          <View className="flex-row rounded-2xl bg-black/60 p-1">
+            {[
+              { label: "Звук", on: beeps, toggle: () => setBeeps((v) => !v) },
+              { label: "Голос", on: speech, toggle: () => setSpeech((v) => !v) },
+            ].map((t) => (
+              <TouchableOpacity
+                key={t.label}
+                onPress={t.toggle}
+                className={`rounded-xl px-4 py-1.5 ${t.on ? "bg-emerald-600" : ""}`}
+                accessibilityRole="switch"
+                accessibilityState={{ checked: t.on }}
+              >
+                <Text className={`font-semibold ${t.on ? "text-white" : "text-zinc-400 line-through"}`}>{t.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
         </View>
 
         {error && status !== "streaming" && (
@@ -87,24 +113,24 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
         )}
       </View>
 
-      {/* Ближайшее препятствие + стоп */}
+      {/* Главная опасность + стоп */}
       <View className="absolute bottom-10 w-full items-center gap-4 px-6">
         <View
           className="w-full rounded-3xl bg-black/70 px-5 py-4"
           accessibilityLiveRegion="polite"
           accessible
         >
-          {nearest ? (
-            <Text className="text-2xl font-black text-center" style={{ color: URGENCY_COLOR[nearest.urgency] }}>
-              {describe(nearest)}
+          {primary ? (
+            <Text className="text-2xl font-black text-center" style={{ color: URGENCY_COLOR[primary.urgency] }}>
+              {describe(primary)}
             </Text>
           ) : (
             <Text className="text-zinc-300 text-xl font-bold text-center">
-              {status === "streaming" ? "Препятствий не видно" : "Ожидание сервера"}
+              {status === "streaming" ? "Путь свободен" : "Ожидание сервера"}
             </Text>
           )}
-          {obstacles.length > 1 && (
-            <Text className="text-zinc-400 text-sm text-center mt-1">ещё объектов: {obstacles.length - 1}</Text>
+          {otherThreats > 0 && (
+            <Text className="text-zinc-400 text-sm text-center mt-1">ещё опасностей: {otherThreats}</Text>
           )}
         </View>
 

@@ -4,6 +4,7 @@ import { Text, View, TouchableOpacity, Platform } from "react-native";
 import { useCameraPermissions } from "expo-camera";
 import { HomeScreen } from "./src/screens/HomeScreen";
 import { ScannerScreen } from "./src/screens/ScannerScreen";
+import { unlockAudio } from "./src/audio/useAudioFeedback";
 
 
 export default function App() {
@@ -36,5 +37,12 @@ export default function App() {
     return <ScannerScreen onStop={() => setIsScanning(false)} />;
   }
 
-  return <HomeScreen onStart={() => setIsScanning(true)} />;
+  return (
+    <HomeScreen
+      onStart={() => {
+        unlockAudio(); // браузер разрешает звук только в обработчике нажатия
+        setIsScanning(true);
+      }}
+    />
+  );
 }

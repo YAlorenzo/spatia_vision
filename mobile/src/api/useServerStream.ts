@@ -109,8 +109,10 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
         skipProcessing: true,
       });
       if (!photo?.base64) return null;
-      if (Platform.OS === "web" && photo.width) {
-        scale = Math.min(1, maxWidth / photo.width); // width — размер исходного потока
+      if (Platform.OS === "web" && photo.width && photo.height) {
+        // Ужимаем по ДЛИННОЙ стороне: телефон вертикально даёт кадр 720x1280,
+        // по ширине получилось бы 640x1138 — вдвое тяжелее и медленнее.
+        scale = Math.min(1, maxWidth / Math.max(photo.width, photo.height));
       }
       if (photo.width && photo.height) {
         // expo-camera web считает камеру без facingMode фронтальной и зеркалит превью

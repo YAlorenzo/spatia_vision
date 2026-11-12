@@ -7,8 +7,15 @@ from .config import Settings
 from .schemas import Detection
 
 
-def focal_px(frame_width: int, hfov_deg: float) -> float:
-    return (frame_width / 2) / math.tan(math.radians(hfov_deg) / 2)
+def focal_px(frame_w: int, frame_h: int, fov_long_deg: float) -> float:
+    """Фокусное расстояние в пикселях. Угол обзора задаётся по ДЛИННОЙ стороне кадра,
+    поэтому результат одинаков для горизонтального и вертикального телефона."""
+    return (max(frame_w, frame_h) / 2) / math.tan(math.radians(fov_long_deg) / 2)
+
+
+def bearing_deg(x_px: float, frame_w: int, frame_h: int, fov_long_deg: float) -> float:
+    """Угол на точку по горизонтали: 0 — прямо, < 0 — слева, > 0 — справа."""
+    return math.degrees(math.atan((x_px - frame_w / 2) / focal_px(frame_w, frame_h, fov_long_deg)))
 
 
 def sample_depth(depth_map: np.ndarray, box: tuple[int, int, int, int], s: Settings) -> float | None:
@@ -40,7 +47,7 @@ def geometry_distance(det: Detection, frame_hw: tuple[int, int], s: Settings) ->
     box_h = y2 - y1
     if box_h < 12:
         return None
-    return focal_px(fw, s.camera_hfov_deg) * real_h / box_h
+    return focal_px(fw, fh, s.camera_fov_deg) * real_h / box_h
 
 
 def fuse(depth_m: float | None, geom_m: float | None, s: Settings) -> float | None:

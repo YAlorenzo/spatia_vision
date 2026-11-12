@@ -7,6 +7,7 @@
 раздаёт и её: тогда фронт и /ws живут на одном адресе — нужен один туннель.
 """
 import asyncio
+import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -24,6 +25,7 @@ from spatia.schemas import Obstacle
 
 WEB_DIST = SERVER_DIR.parent / "mobile" / "dist"
 HELLO_TIMEOUT_S = 10
+DEBUG_MOVING = os.environ.get("SPATIA_DEBUG") == "1"  # печатать "едет на тебя" в лог
 
 # Одна видеокарта -> один поток инференса. Все сессии обрабатываются по очереди.
 gpu = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu")
@@ -68,11 +70,16 @@ def process_jpeg(session: Session, jpeg: bytes) -> list[Obstacle] | None:
     frame = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
     if frame is None:
         return None
-    max_w = session.s.max_frame_width
-    if frame.shape[1] > max_w:
-        h = round(frame.shape[0] * max_w / frame.shape[1])
-        frame = cv2.resize(frame, (max_w, h), interpolation=cv2.INTER_AREA)
-    obstacles, _ = session.process(frame)
+    max_side = session.s.max_frame_side
+    if max(frame.shape[:2]) > max_side:
+        k = max_side / max(frame.shape[:2])
+        frame = cv2.resize(frame, (round(frame.shape[1] * k), round(frame.shape[0] * k)), interpolation=cv2.INTER_AREA)
+    obstacles, dbg = session.process(frame)
+    if DEBUG_MOVING:
+        for o in dbg.objects:
+            if o.moving and o.threat:
+                print(f"[moving] {o.detection.cls}#{o.detection.track_id} d={o.distance.smoothed_m:.1f} "
+                      f"approach={o.approach_mps:+.2f} own={o.own_speed_mps:+.2f} ego={dbg.ego_speed:+.2f}")
     return obstacles
 
 
