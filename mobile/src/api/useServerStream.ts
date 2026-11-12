@@ -1,6 +1,7 @@
 import { RefObject, useEffect, useRef, useState } from "react";
 import { Platform } from "react-native";
 import type { CameraView } from "expo-camera";
+import { measureLuma, nextTorch } from "./brightness";
 import {
   clearSceneCalibration,
   loadSceneCalibration,
@@ -80,8 +81,11 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
   const [calibration, setCalibration] = useState<SceneCalibration | null>(() => loadSceneCalibration(scene));
   const [calibrationNote, setCalibrationNote] = useState<string | null>(null);
   const [calibrationOk, setCalibrationOk] = useState<boolean | null>(null);
+  const [torchOn, setTorchOn] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
+  const capturingRef = useRef(false);
+  const torchState = useRef({ on: false, dark: 0, bright: 0 });
   const cameraReadyRef = useRef(cameraReady);
   const settingsRef = useRef<StreamSettings>(settingsFor(scene, hfov));
   const calibToken = useRef(0);
@@ -108,6 +112,51 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
     }
   }, [scene, hfov]);
 
+  const noteLuma = (luma: number) => {
+    const prev = torchState.current;
+    const next = nextTorch(prev.on, luma, prev.dark, prev.bright);
+    torchState.current = { on: next.on, dark: next.darkStreak, bright: next.brightStreak };
+    if (next.on !== prev.on) setTorchOn(next.on);
+  };
+
+  // Пока основной цикл кадров не идёт (сервер ещё не ответил), смотрим яркость отдельно.
+  useEffect(() => {
+    if (!enabled || !cameraReady) {
+      torchState.current = { on: false, dark: 0, bright: 0 };
+      setTorchOn(false);
+      return;
+    }
+    let alive = true;
+    let busy = false;
+    const timer = setInterval(() => {
+      if (!alive || busy || capturingRef.current) return;
+      const camera = cameraRef.current;
+      if (!camera) return;
+      busy = true;
+      camera
+        .takePictureAsync({
+          base64: true,
+          quality: 0.2,
+          imageType: "jpg",
+          scale: 0.15,
+          shutterSound: false,
+          skipProcessing: true,
+        })
+        .then((photo) => (photo?.base64 ? measureLuma(photo.base64) : null))
+        .then((luma) => {
+          if (alive && luma != null) noteLuma(luma);
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          busy = false;
+        });
+    }, 900);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [enabled, cameraReady, cameraRef]);
+
   useEffect(() => {
     if (!enabled) return;
     let alive = true;
@@ -132,15 +181,24 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
     const captureFrame = async (): Promise<string | null> => {
       const camera = cameraRef.current;
       if (!camera || !cameraReadyRef.current) return null;
-      const photo = await camera.takePictureAsync({
-        base64: true,
-        quality: JPEG_QUALITY,
-        imageType: "jpg", // web по умолчанию отдаёт PNG — в разы тяжелее
-        scale,
-        shutterSound: false,
-        skipProcessing: true,
-      });
+      capturingRef.current = true;
+      let photo;
+      try {
+        photo = await camera.takePictureAsync({
+          base64: true,
+          quality: JPEG_QUALITY,
+          imageType: "jpg", // web по умолчанию отдаёт PNG — в разы тяжелее
+          scale,
+          shutterSound: false,
+          skipProcessing: true,
+        });
+      } finally {
+        capturingRef.current = false;
+      }
       if (!photo?.base64) return null;
+      void measureLuma(photo.base64).then((luma) => {
+        if (luma != null) noteLuma(luma);
+      });
       if (Platform.OS === "web" && photo.width) {
         scale = Math.min(1, maxWidth / photo.width); // width — размер исходного потока
       }
@@ -340,5 +398,6 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
     calibrationOk,
     calibrate,
     clearCalibration,
+    torchOn,
   };
 }

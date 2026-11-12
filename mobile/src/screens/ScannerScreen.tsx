@@ -1,7 +1,8 @@
-import { useMemo, useRef, useState } from "react";
-import { Text, TouchableOpacity, View } from "react-native";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Platform, Text, TouchableOpacity, View } from "react-native";
 import { CameraView } from "expo-camera";
 import { cssInterop } from "nativewind";
+import { detectTorchSupport } from "../api/brightness";
 import type { Scene } from "../api/protocol";
 import { getServerUrl } from "../api/serverUrl";
 import { StreamStatus, useServerStream } from "../api/useServerStream";
@@ -36,6 +37,7 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
   const [scene, setScene] = useState<Scene>("outdoor");
   const [calibrating, setCalibrating] = useState(false);
   const [distanceM, setDistanceM] = useState(2);
+  const [torchSupported, setTorchSupported] = useState<boolean | null>(Platform.OS === "web" ? null : true);
   const url = useMemo(() => getServerUrl(), []);
 
   const {
@@ -49,6 +51,7 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
     calibrationOk,
     calibrate,
     clearCalibration,
+    torchOn,
   } = useServerStream({
     url,
     cameraRef,
@@ -58,6 +61,25 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
   });
 
   const nearest = obstacles[0];
+  const torchLabel =
+    torchSupported === false ? "нету доступа к фонарику" : torchOn ? "фонарик вкл" : "фонарик выкл";
+
+  useEffect(() => {
+    if (!cameraReady || Platform.OS !== "web") return;
+    let alive = true;
+    const tick = () => {
+      const supported = detectTorchSupport();
+      if (!alive || supported == null) return;
+      setTorchSupported(supported);
+      window.clearInterval(timer);
+    };
+    const timer = window.setInterval(tick, 400);
+    tick();
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [cameraReady]);
 
   return (
     <View className="flex-1 bg-zinc-950">
@@ -65,6 +87,7 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
         ref={cameraRef}
         className="flex-1"
         facing="back"
+        enableTorch={torchSupported === true && torchOn}
         onCameraReady={() => setCameraReady(true)}
       />
 
@@ -84,6 +107,16 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
           <View className="flex-row items-center gap-2">
             <View className={`h-3 w-3 rounded-full ${STATUS_DOT[status]}`} />
             <Text className="text-white font-semibold">{STATUS_TEXT[status]}</Text>
+            {torchSupported !== null && (
+              <View className="flex-row items-center gap-1">
+                <View className={`h-2 w-2 rounded-full ${torchSupported && torchOn ? "bg-amber-300" : "bg-zinc-500"}`} />
+                <Text
+                  className={`text-xs font-semibold ${torchSupported && torchOn ? "text-amber-300" : "text-zinc-400"}`}
+                >
+                  {torchLabel}
+                </Text>
+              </View>
+            )}
           </View>
           {status === "streaming" && (
             <Text className="text-zinc-300 text-xs">
