@@ -15,7 +15,7 @@ from . import distance as dist
 from .config import DEPTH_MODELS, Scene, Settings
 from .depth import DepthEstimator
 from .detection import Detector, Tracker
-from .schemas import DistanceEstimate, FrameDebug, Obstacle, TrackedObject
+from .schemas import Detection, DistanceEstimate, FrameDebug, ManualCalibration, Obstacle, TrackedObject
 from .spatial import urgency, zone_and_pan
 
 
@@ -40,8 +40,16 @@ class Engine:
                 self._depth[model_id] = DepthEstimator(model_id, self.device, self.settings.depth_input_size)
             return self._depth[model_id]
 
-    def new_session(self, scene: Scene | None = None, hfov_deg: float | None = None) -> "Session":
-        return Session(self, scene=scene, hfov_deg=hfov_deg)
+    def new_session(
+        self,
+        scene: Scene | None = None,
+        hfov_deg: float | None = None,
+        depth_scale: float | None = None,
+    ) -> "Session":
+        session = Session(self, scene=scene, hfov_deg=hfov_deg)
+        if depth_scale is not None:
+            session.apply_manual_scale(depth_scale)
+        return session
 
 
 class Session:
@@ -51,21 +59,124 @@ class Session:
         self.tracker = Tracker(engine.detector.names) if self.s.use_tracking else None
         self.smoother = dist.DistanceSmoother(self.s)
         self.calibrator = dist.DepthScaleCalibrator(self.s)
+        self.manual_scale: float | None = None
+        self.pending_distance_m: float | None = None
+        self.notice: ManualCalibration | None = None
+        self.scale_epoch = 0
         self.frame_idx = 0
         self.configure(scene=scene, hfov_deg=hfov_deg)
 
-    def configure(self, scene: Scene | None = None, hfov_deg: float | None = None) -> None:
-        """Смена сцены/камеры. Калибровку масштаба сбрасываем — она зависит от модели и FOV."""
-        changed = False
+    def configure(
+        self,
+        scene: Scene | None = None,
+        hfov_deg: float | None = None,
+        depth_scale: float | None = None,
+        apply_scale: bool = False,
+    ) -> None:
+        """Смена сцены/камеры. Автокалибровку сбрасываем — она зависит от модели и FOV.
+
+        apply_scale=True значит, что depth_scale передан явно: число фиксирует
+        ручной масштаб, None возвращает автокалибровку.
+        """
+        scene_changed = False
         if scene is not None and DEPTH_MODELS[scene] != self.s.depth_model_id:
             self.s.depth_model_id = DEPTH_MODELS[scene]
-            changed = True
+            scene_changed = True
+            self.manual_scale = None
+            self.s.auto_scale = True
+            self.pending_distance_m = None
         if hfov_deg is not None and hfov_deg != self.s.camera_hfov_deg:
             self.s.camera_hfov_deg = hfov_deg
-            changed = True
-        if changed:
+            scene_changed = True
+        if scene_changed:
             self.calibrator.reset()
+        if apply_scale:
+            if depth_scale is None:
+                self.clear_manual_scale(reset_hfov=False)
+            else:
+                self.apply_manual_scale(depth_scale)
         self.depth = self.engine.depth(self.s.depth_model_id)
+
+    def apply_manual_scale(self, depth_scale: float) -> None:
+        lo, hi = self.s.auto_scale_limits
+        if not lo <= depth_scale <= hi:
+            return
+        self.scale_epoch += 1
+        self.manual_scale = depth_scale
+        self.s.auto_scale = False
+        self.smoother.reset()
+
+    def arm_calibration(self, distance_m: float) -> None:
+        """Следующий обработанный кадр зафиксирует масштаб по центру кадра."""
+        self.pending_distance_m = distance_m
+
+    def clear_manual_scale(self, reset_hfov: bool = True) -> None:
+        self.scale_epoch += 1
+        self.manual_scale = None
+        self.pending_distance_m = None
+        self.s.auto_scale = True
+        if reset_hfov:
+            self.s.camera_hfov_deg = self.engine.settings.camera_hfov_deg
+        self.calibrator.reset()
+        self.smoother.reset()
+
+    def take_notice(self) -> ManualCalibration | None:
+        notice, self.notice = self.notice, None
+        return notice
+
+    def _lock_scale(
+        self,
+        depth_map: np.ndarray,
+        detections: list[Detection],
+        frame_hw: tuple[int, int],
+        known: float,
+    ) -> ManualCalibration:
+        """Фиксирует масштаб: known / глубина в центре. Угол обзора — если в центре объект известной высоты."""
+        center = dist.sample_center_depth(depth_map, self.s)
+        if center is None or center < 0.05:
+            return ManualCalibration(
+                ok=False,
+                distance_m=known,
+                epoch=self.scale_epoch,
+                message="В центре кадра нет дистанции. Наведите камеру на стену или человека и повторите.",
+            )
+        ratio = known / center
+        lo, hi = self.s.auto_scale_limits
+        if not lo <= ratio <= hi:
+            return ManualCalibration(
+                ok=False,
+                distance_m=known,
+                center_m=round(center, 2),
+                epoch=self.scale_epoch,
+                message=(
+                    f"Модель видит {center:.1f} м, вы указали {known:.1f} м. "
+                    "Расхождение слишком большое — проверьте расстояние и режим Улица/Помещение."
+                ),
+            )
+        ratio = round(ratio, 3)
+        self.scale_epoch += 1
+        self.manual_scale = ratio
+        self.s.auto_scale = False
+        self.smoother.reset()
+        hfov = dist.hfov_from_reference(detections, frame_hw, known, self.s)
+        if hfov is not None:
+            self.s.camera_hfov_deg = hfov
+            self.calibrator.reset()
+            message = f"Сохранено: масштаб ×{ratio:.2f}, угол обзора {hfov:.0f}°."
+        else:
+            message = (
+                f"Сохранено: масштаб ×{ratio:.2f}. "
+                "Угол обзора не изменён — в центре нет объекта известной высоты."
+            )
+        return ManualCalibration(
+            ok=True,
+            distance_m=known,
+            depth_scale=ratio,
+            hfov=hfov,
+            center_m=round(center, 2),
+            message=message,
+            epoch=self.scale_epoch,
+        )
 
     def process(self, frame_bgr: np.ndarray) -> tuple[list[Obstacle], FrameDebug]:
         t0 = time.perf_counter()
@@ -85,9 +196,26 @@ class Session:
             geom_m = dist.geometry_distance(det, (fh, fw), self.s) if self.s.use_geometry else None
             raw.append((det, depth_m, geom_m))
 
-        # Калибровка масштаба глубины по объектам известного размера в этом кадре
-        self.calibrator.update([(d, g) for _, d, g in raw if d is not None and g is not None])
-        scale = self.calibrator.scale
+        if self.pending_distance_m is not None:
+            known = self.pending_distance_m
+            self.pending_distance_m = None
+            self.notice = self._lock_scale(depth_map, [det for det, _, _ in raw], (fh, fw), known)
+            if self.notice.ok and self.notice.hfov is not None:
+                raw = [
+                    (
+                        det,
+                        depth_m,
+                        dist.geometry_distance(det, (fh, fw), self.s) if self.s.use_geometry else None,
+                    )
+                    for det, depth_m, _ in raw
+                ]
+
+        # Ручной масштаб, если он зафиксирован. Иначе автокалибровка по людям и машинам.
+        if self.manual_scale is None:
+            self.calibrator.update([(d, g) for _, d, g in raw if d is not None and g is not None])
+            scale = self.calibrator.scale
+        else:
+            scale = self.manual_scale
 
         objects: list[TrackedObject] = []
         for det, depth_m, geom_m in raw:

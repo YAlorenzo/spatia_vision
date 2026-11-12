@@ -2,6 +2,7 @@
 
 export const PROTOCOL_VERSION = 1;
 export const FRAME_HEADER_BYTES = 4; // uint32 big-endian: seq
+export const DEFAULT_HFOV = 65; // как Settings.camera_hfov_deg на сервере
 
 export type Scene = "outdoor" | "indoor";
 export type Zone = "left" | "center" | "right";
@@ -25,12 +26,24 @@ export interface HelloMessage {
   platform: string;
   scene?: Scene;
   hfov?: number;
+  depth_scale?: number;
 }
 
 export interface ConfigMessage {
   type: "config";
   scene?: Scene;
   hfov?: number;
+  /** null сбрасывает ручной масштаб этой сессии. */
+  depth_scale?: number | null;
+}
+
+export interface CalibrateMessage {
+  type: "calibrate";
+  distance_m: number;
+}
+
+export interface ClearCalibrationMessage {
+  type: "clear_calibration";
 }
 
 // сервер -> клиент
@@ -49,12 +62,26 @@ export interface ResultMessage {
   dropped: number;
 }
 
+export interface CalibratedMessage {
+  type: "calibrated";
+  ok: boolean;
+  distance_m: number;
+  depth_scale: number | null;
+  hfov: number | null;
+  center_m: number | null;
+  message: string;
+}
+
+export interface CalibrationClearedMessage {
+  type: "calibration_cleared";
+}
+
 export interface ErrorMessage {
   type: "error";
   message: string;
 }
 
-export type ServerMessage = ReadyMessage | ResultMessage | ErrorMessage;
+export type ServerMessage = ReadyMessage | ResultMessage | CalibratedMessage | CalibrationClearedMessage | ErrorMessage;
 
 /** base64 JPEG (можно с префиксом data:...;base64,) -> бинарный кадр [seq][JPEG]. */
 export function encodeFrame(seq: number, base64: string): ArrayBuffer {

@@ -2,7 +2,16 @@ import { RefObject, useEffect, useRef, useState } from "react";
 import { Platform } from "react-native";
 import type { CameraView } from "expo-camera";
 import {
+  clearSceneCalibration,
+  loadSceneCalibration,
+  saveSceneCalibration,
+  type SceneCalibration,
+} from "./calibrationStore";
+import {
+  CalibrateMessage,
+  ClearCalibrationMessage,
   ConfigMessage,
+  DEFAULT_HFOV,
   encodeFrame,
   HelloMessage,
   Obstacle,
@@ -42,6 +51,17 @@ interface Options {
   hfov?: number;
 }
 
+interface StreamSettings {
+  scene: Scene;
+  hfov: number;
+  depthScale?: number;
+}
+
+const settingsFor = (scene: Scene, hfov?: number): StreamSettings => {
+  const saved = loadSceneCalibration(scene);
+  return { scene, hfov: saved?.hfov ?? hfov ?? DEFAULT_HFOV, depthScale: saved?.depthScale };
+};
+
 const EMPTY_STATS: StreamStats = { fps: 0, rttMs: 0, serverMs: 0, frameKb: 0 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const ema = (prev: number, next: number) => (prev ? prev * 0.8 + next * 0.2 : next);
@@ -57,21 +77,33 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
   const [stats, setStats] = useState<StreamStats>(EMPTY_STATS);
   const [frameSize, setFrameSize] = useState<FrameSize | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [calibration, setCalibration] = useState<SceneCalibration | null>(() => loadSceneCalibration(scene));
+  const [calibrationNote, setCalibrationNote] = useState<string | null>(null);
+  const [calibrationOk, setCalibrationOk] = useState<boolean | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const cameraReadyRef = useRef(cameraReady);
-  const settingsRef = useRef({ scene, hfov });
+  const settingsRef = useRef<StreamSettings>(settingsFor(scene, hfov));
+  const calibToken = useRef(0);
+  const calibTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     cameraReadyRef.current = cameraReady;
   }, [cameraReady]);
 
-  // Смена сцены на лету
+  // Смена сцены: подставляем сохранённую калибровку этой сцены или сбрасываем чужую.
   useEffect(() => {
-    settingsRef.current = { scene, hfov };
+    const next = settingsFor(scene, hfov);
+    settingsRef.current = next;
+    setCalibration(loadSceneCalibration(scene));
     const ws = wsRef.current;
     if (ws?.readyState === WebSocket.OPEN) {
-      const msg: ConfigMessage = { type: "config", scene, hfov };
+      const msg: ConfigMessage = {
+        type: "config",
+        scene,
+        hfov: next.hfov,
+        depth_scale: next.depthScale ?? null,
+      };
       ws.send(JSON.stringify(msg));
     }
   }, [scene, hfov]);
@@ -170,8 +202,15 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
       wsRef.current = ws;
 
       ws.onopen = () => {
-        const { scene, hfov } = settingsRef.current;
-        const hello: HelloMessage = { type: "hello", v: PROTOCOL_VERSION, platform: Platform.OS, scene, hfov };
+        const { scene: helloScene, hfov: helloHfov, depthScale } = settingsRef.current;
+        const hello: HelloMessage = {
+          type: "hello",
+          v: PROTOCOL_VERSION,
+          platform: Platform.OS,
+          scene: helloScene,
+          hfov: helloHfov,
+        };
+        if (depthScale != null) hello.depth_scale = depthScale;
         ws.send(JSON.stringify(hello));
       };
 
@@ -190,6 +229,34 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
           streamLoop(ws);
         } else if (msg.type === "result") {
           if (pending?.seq === msg.seq) resolvePending(msg); // устаревшие ответы игнорируем
+        } else if (msg.type === "calibrated") {
+          calibToken.current += 1;
+          if (calibTimer.current) clearTimeout(calibTimer.current);
+          setCalibrationOk(msg.ok);
+          setCalibrationNote(msg.message);
+          if (msg.ok && msg.depth_scale != null) {
+            const sceneNow = settingsRef.current.scene;
+            const prev = loadSceneCalibration(sceneNow);
+            const stored: SceneCalibration = {
+              depthScale: msg.depth_scale,
+              hfov: msg.hfov ?? prev?.hfov,
+            };
+            saveSceneCalibration(sceneNow, stored);
+            settingsRef.current = {
+              ...settingsRef.current,
+              depthScale: stored.depthScale,
+              hfov: stored.hfov ?? settingsRef.current.hfov,
+            };
+            setCalibration(stored);
+          }
+        } else if (msg.type === "calibration_cleared") {
+          calibToken.current += 1;
+          if (calibTimer.current) clearTimeout(calibTimer.current);
+          clearSceneCalibration(settingsRef.current.scene);
+          settingsRef.current = { ...settingsRef.current, depthScale: undefined, hfov: DEFAULT_HFOV };
+          setCalibration(null);
+          setCalibrationOk(true);
+          setCalibrationNote("Калибровка сброшена. Снова используется автокалибровка.");
         } else if (msg.type === "error") {
           console.warn("[stream] сервер:", msg.message);
           setError(msg.message);
@@ -215,6 +282,7 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
     return () => {
       alive = false;
       resolvePending(null);
+      if (calibTimer.current) clearTimeout(calibTimer.current);
       wsRef.current?.close();
       wsRef.current = null;
       setStatus("connecting"); // к следующему запуску
@@ -222,5 +290,55 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
     };
   }, [url, enabled, cameraRef]);
 
-  return { status: enabled ? status : ("stopped" as StreamStatus), obstacles, stats, frameSize, error };
+  const calibrate = (distanceM: number) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      setCalibrationOk(false);
+      setCalibrationNote("Нет связи с сервером");
+      return;
+    }
+    const token = ++calibToken.current;
+    if (calibTimer.current) clearTimeout(calibTimer.current);
+    setCalibrationOk(null);
+    setCalibrationNote("Держите центр кадра на цели…");
+    const msg: CalibrateMessage = { type: "calibrate", distance_m: distanceM };
+    ws.send(JSON.stringify(msg));
+    calibTimer.current = setTimeout(() => {
+      if (calibToken.current === token) {
+        setCalibrationOk(false);
+        setCalibrationNote("Сервер не ответил. Повторите калибровку.");
+      }
+    }, 8000);
+  };
+
+  const clearCalibration = () => {
+    calibToken.current += 1;
+    if (calibTimer.current) clearTimeout(calibTimer.current);
+    clearSceneCalibration(settingsRef.current.scene);
+    settingsRef.current = { ...settingsRef.current, depthScale: undefined, hfov: DEFAULT_HFOV };
+    setCalibration(null);
+    const ws = wsRef.current;
+    if (ws?.readyState === WebSocket.OPEN) {
+      const msg: ClearCalibrationMessage = { type: "clear_calibration" };
+      ws.send(JSON.stringify(msg));
+      setCalibrationOk(null);
+      setCalibrationNote("Сбрасываю калибровку…");
+    } else {
+      setCalibrationOk(true);
+      setCalibrationNote("Калибровка сброшена на этом телефоне.");
+    }
+  };
+
+  return {
+    status: enabled ? status : ("stopped" as StreamStatus),
+    obstacles,
+    stats,
+    frameSize,
+    error,
+    calibration,
+    calibrationNote,
+    calibrationOk,
+    calibrate,
+    clearCalibration,
+  };
 }

@@ -34,6 +34,18 @@ class TrackedObject:
 
 
 @dataclass
+class ManualCalibration:
+    """Итог одной ручной калибровки. Клиенту уходит как сообщение calibrated."""
+    ok: bool
+    distance_m: float
+    depth_scale: float | None = None
+    hfov: float | None = None
+    center_m: float | None = None
+    message: str = ""
+    epoch: int = 0  # чтобы не сохранить калибровку, если её уже сбросили
+
+
+@dataclass
 class FrameDebug:
     """Внутренние данные для визуализации/отладки — клиенту не отправляются."""
     objects: list[TrackedObject] = field(default_factory=list)

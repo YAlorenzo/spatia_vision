@@ -27,19 +27,68 @@ def sample_depth(depth_map: np.ndarray, box: tuple[int, int, int, int], s: Setti
     return float(np.percentile(patch, s.depth_percentile))
 
 
-def geometry_distance(det: Detection, frame_hw: tuple[int, int], s: Settings) -> float | None:
-    """distance = f * H_real / h_px. Только если объект целиком в кадре по вертикали."""
-    real_h = s.known_heights.get(det.cls)
-    if real_h is None:
+def sample_center_depth(depth_map: np.ndarray, s: Settings) -> float | None:
+    """Глубина в центре кадра: туда пользователь наводит цель при ручной калибровке."""
+    h, w = depth_map.shape
+    side = max(8, int(min(h, w) * 0.18))
+    cy, cx = h // 2, w // 2
+    y1, y2 = max(0, cy - side // 2), min(h, cy + side // 2)
+    x1, x2 = max(0, cx - side // 2), min(w, cx + side // 2)
+    patch = depth_map[y1:y2, x1:x2]
+    if patch.size < 4:
         return None
+    return float(np.percentile(patch, s.depth_percentile))
+
+
+def _fully_visible(det: Detection, frame_hw: tuple[int, int]) -> bool:
     fh, fw = frame_hw
     x1, y1, x2, y2 = det.box
     margin = 0.01 * fh
-    if y1 <= margin or y2 >= fh - margin:  # обрезан сверху/снизу — высота занижена
+    if y1 <= margin or y2 >= fh - margin:
+        return False
+    return (y2 - y1) >= 12 and (x2 - x1) >= 12 and fw > 0
+
+
+def hfov_from_reference(
+    detections: list[Detection], frame_hw: tuple[int, int], known_m: float, s: Settings
+) -> float | None:
+    """Угол обзора по объекту известной высоты, который перекрывает центр кадра.
+
+    known_m — расстояние, которое назвал пользователь, а не оценка модели.
+    """
+    fh, fw = frame_hw
+    cx, cy = fw / 2, fh / 2
+    best: Detection | None = None
+    best_area = 0
+    for det in detections:
+        if s.known_heights.get(det.cls) is None or not _fully_visible(det, frame_hw):
+            continue
+        x1, y1, x2, y2 = det.box
+        if not (x1 <= cx <= x2 and y1 <= cy <= y2):
+            continue
+        area = (x2 - x1) * (y2 - y1)
+        if area > best_area:
+            best, best_area = det, area
+    if best is None:
         return None
-    box_h = y2 - y1
-    if box_h < 12:
+    real_h = s.known_heights[best.cls]
+    box_h = best.box[3] - best.box[1]
+    focal = known_m * box_h / real_h
+    if focal <= 0:
         return None
+    hfov = math.degrees(2 * math.atan((fw / 2) / focal))
+    if not 20 < hfov < 150:
+        return None
+    return round(hfov, 1)
+
+
+def geometry_distance(det: Detection, frame_hw: tuple[int, int], s: Settings) -> float | None:
+    """distance = f * H_real / h_px. Только если объект целиком в кадре по вертикали."""
+    real_h = s.known_heights.get(det.cls)
+    if real_h is None or not _fully_visible(det, frame_hw):
+        return None
+    _, fw = frame_hw
+    box_h = det.box[3] - det.box[1]
     return focal_px(fw, s.camera_hfov_deg) * real_h / box_h
 
 

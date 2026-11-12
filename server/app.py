@@ -7,6 +7,7 @@
 раздаёт и её: тогда фронт и /ws живут на одном адресе — нужен один туннель.
 """
 import asyncio
+import json
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -19,8 +20,19 @@ from pydantic import ValidationError
 
 from spatia import Engine, Session, Settings
 from spatia.config import SERVER_DIR
-from spatia.protocol import Config, Error, Hello, Ready, Result, parse_frame
-from spatia.schemas import Obstacle
+from spatia.protocol import (
+    Calibrate,
+    Calibrated,
+    CalibrationCleared,
+    ClearCalibration,
+    Config,
+    Error,
+    Hello,
+    Ready,
+    Result,
+    parse_frame,
+)
+from spatia.schemas import ManualCalibration, Obstacle
 
 WEB_DIST = SERVER_DIR.parent / "mobile" / "dist"
 HELLO_TIMEOUT_S = 10
@@ -64,20 +76,67 @@ class FrameSlot:
         return item
 
 
-def process_jpeg(session: Session, jpeg: bytes) -> list[Obstacle] | None:
+def process_jpeg(session: Session, jpeg: bytes) -> tuple[list[Obstacle] | None, ManualCalibration | None]:
     frame = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
     if frame is None:
-        return None
+        return None, None
     max_w = session.s.max_frame_width
     if frame.shape[1] > max_w:
         h = round(frame.shape[0] * max_w / frame.shape[1])
         frame = cv2.resize(frame, (max_w, h), interpolation=cv2.INTER_AREA)
     obstacles, _ = session.process(frame)
-    return obstacles
+    return obstacles, session.take_notice()
+
+
+def calibrated_message(notice: ManualCalibration) -> Calibrated:
+    return Calibrated(
+        ok=notice.ok,
+        distance_m=notice.distance_m,
+        depth_scale=notice.depth_scale,
+        hfov=notice.hfov,
+        center_m=notice.center_m,
+        message=notice.message,
+    )
 
 
 async def send(ws: WebSocket, msg) -> None:
     await ws.send_text(msg.model_dump_json())
+
+
+async def handle_text(ws: WebSocket, session: Session, text: str) -> None:
+    loop = asyncio.get_running_loop()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        await send(ws, Error(message="неизвестное сообщение"))
+        return
+    kind = data.get("type")
+    try:
+        if kind == "config":
+            cfg = Config.model_validate(data)
+            apply_scale = "depth_scale" in cfg.model_fields_set
+
+            def apply_config() -> None:
+                session.configure(
+                    scene=cfg.scene,
+                    hfov_deg=cfg.hfov,
+                    depth_scale=cfg.depth_scale,
+                    apply_scale=apply_scale,
+                )
+
+            # Через gpu-поток, чтобы не менять настройки посреди обработки кадра
+            await loop.run_in_executor(gpu, apply_config)
+        elif kind == "calibrate":
+            cal = Calibrate.model_validate(data)
+            await loop.run_in_executor(gpu, session.arm_calibration, cal.distance_m)
+        elif kind == "clear_calibration":
+            ClearCalibration.model_validate(data)
+            await loop.run_in_executor(gpu, session.clear_manual_scale)
+            await send(ws, CalibrationCleared())
+        else:
+            await send(ws, Error(message="неизвестное сообщение"))
+    except ValidationError:
+        await send(ws, Error(message="неизвестное сообщение"))
 
 
 async def process_loop(ws: WebSocket, session: Session, slot: FrameSlot) -> None:
@@ -86,7 +145,7 @@ async def process_loop(ws: WebSocket, session: Session, slot: FrameSlot) -> None
         seq, jpeg = await slot.take()
         t0 = loop.time()
         try:
-            obstacles = await loop.run_in_executor(gpu, process_jpeg, session, jpeg)
+            obstacles, notice = await loop.run_in_executor(gpu, process_jpeg, session, jpeg)
         except Exception as e:  # ошибка одного кадра не должна убивать сессию
             print(f"[server] ошибка обработки кадра {seq}: {e!r}")
             await send(ws, Error(message=f"ошибка обработки кадра {seq}"))
@@ -100,6 +159,12 @@ async def process_loop(ws: WebSocket, session: Session, slot: FrameSlot) -> None
             server_ms=round((loop.time() - t0) * 1000, 1),
             dropped=slot.dropped,
         ))
+        if notice is not None:
+            # Сброс мог произойти, пока кадр уже посчитали: тогда клиенту результат не отдаём.
+            epoch = await loop.run_in_executor(gpu, lambda: session.scale_epoch)
+            if epoch == notice.epoch:
+                print(f"[server] калибровка ok={notice.ok} scale={notice.depth_scale} hfov={notice.hfov}")
+                await send(ws, calibrated_message(notice))
 
 
 @app.websocket("/ws")
@@ -115,9 +180,14 @@ async def websocket_endpoint(ws: WebSocket):
 
     assert engine is not None
     # В gpu-потоке: может понадобиться загрузить модель для другой сцены
-    session = await loop.run_in_executor(gpu, engine.new_session, hello.scene, hello.hfov)
+    session = await loop.run_in_executor(
+        gpu, engine.new_session, hello.scene, hello.hfov, hello.depth_scale
+    )
     sid = uuid.uuid4().hex[:8]
-    print(f"[server] {sid}: подключился ({hello.platform}, scene={hello.scene}, hfov={hello.hfov})")
+    print(
+        f"[server] {sid}: подключился ({hello.platform}, scene={hello.scene}, "
+        f"hfov={hello.hfov}, depth_scale={hello.depth_scale})"
+    )
     await send(ws, Ready(session=sid))
 
     slot = FrameSlot()
@@ -133,13 +203,7 @@ async def websocket_endpoint(ws: WebSocket):
                 except ValueError as e:
                     await send(ws, Error(message=str(e)))
             elif msg.get("text") is not None:
-                try:
-                    cfg = Config.model_validate_json(msg["text"])
-                except ValidationError:
-                    await send(ws, Error(message="неизвестное сообщение"))
-                    continue
-                # Через gpu-поток, чтобы не менять настройки посреди обработки кадра
-                await loop.run_in_executor(gpu, session.configure, cfg.scene, cfg.hfov)
+                await handle_text(ws, session, msg["text"])
     finally:
         worker.cancel()
         print(f"[server] {sid}: отключился, выброшено кадров: {slot.dropped}")

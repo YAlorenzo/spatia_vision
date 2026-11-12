@@ -5,6 +5,7 @@ import { cssInterop } from "nativewind";
 import type { Scene } from "../api/protocol";
 import { getServerUrl } from "../api/serverUrl";
 import { StreamStatus, useServerStream } from "../api/useServerStream";
+import { CalibrateSheet } from "../components/CalibrateSheet";
 import { ObstacleOverlay } from "../components/ObstacleOverlay";
 import { describe, URGENCY_COLOR } from "../components/labels";
 
@@ -33,9 +34,22 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
   const cameraRef = useRef<CameraView | null>(null);
   const [cameraReady, setCameraReady] = useState(false);
   const [scene, setScene] = useState<Scene>("outdoor");
+  const [calibrating, setCalibrating] = useState(false);
+  const [distanceM, setDistanceM] = useState(2);
   const url = useMemo(() => getServerUrl(), []);
 
-  const { status, obstacles, stats, frameSize, error } = useServerStream({
+  const {
+    status,
+    obstacles,
+    stats,
+    frameSize,
+    error,
+    calibration,
+    calibrationNote,
+    calibrationOk,
+    calibrate,
+    clearCalibration,
+  } = useServerStream({
     url,
     cameraRef,
     cameraReady,
@@ -55,6 +69,14 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
       />
 
       <ObstacleOverlay obstacles={obstacles} frameSize={frameSize} />
+
+      {calibrating && (
+        <View className="absolute inset-0 items-center justify-center" pointerEvents="none">
+          <View className="h-16 w-16 rounded-full border-2 border-white items-center justify-center">
+            <View className="h-2 w-2 rounded-full bg-white" />
+          </View>
+        </View>
+      )}
 
       {/* Статус соединения и переключатель сцены */}
       <View className="absolute top-4 left-4 right-4 gap-2">
@@ -88,29 +110,58 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
       </View>
 
       {/* Ближайшее препятствие + стоп */}
-      <View className="absolute bottom-10 w-full items-center gap-4 px-6">
-        <View
-          className="w-full rounded-3xl bg-black/70 px-5 py-4"
-          accessibilityLiveRegion="polite"
-          accessible
-        >
-          {nearest ? (
-            <Text className="text-2xl font-black text-center" style={{ color: URGENCY_COLOR[nearest.urgency] }}>
-              {describe(nearest)}
+      <View className="absolute bottom-10 w-full items-center gap-3 px-6">
+        {calibrating ? (
+          <CalibrateSheet
+            distanceM={distanceM}
+            onDistance={setDistanceM}
+            onApply={() => calibrate(distanceM)}
+            onClear={clearCalibration}
+            onClose={() => setCalibrating(false)}
+            note={calibrationNote}
+            ok={calibrationOk}
+            saved={calibration}
+            canApply={status === "streaming"}
+          />
+        ) : (
+          <View
+            className="w-full rounded-3xl bg-black/70 px-5 py-4"
+            accessibilityLiveRegion="polite"
+            accessible
+          >
+            {nearest ? (
+              <Text className="text-2xl font-black text-center" style={{ color: URGENCY_COLOR[nearest.urgency] }}>
+                {describe(nearest)}
+              </Text>
+            ) : (
+              <Text className="text-zinc-300 text-xl font-bold text-center">
+                {status === "streaming" ? "Препятствий не видно" : "Ожидание сервера"}
+              </Text>
+            )}
+            {obstacles.length > 1 && (
+              <Text className="text-zinc-400 text-sm text-center mt-1">ещё объектов: {obstacles.length - 1}</Text>
+            )}
+          </View>
+        )}
+
+        {!calibrating && (
+          <TouchableOpacity
+            className="bg-white/15 py-3 w-4/5 rounded-3xl items-center"
+            onPress={() => setCalibrating(true)}
+            accessibilityRole="button"
+            accessibilityLabel="Открыть калибровку расстояния"
+          >
+            <Text className="text-white text-lg font-bold text-center">
+              Калибровка{calibration ? ` · ×${calibration.depthScale.toFixed(2)}` : ""}
             </Text>
-          ) : (
-            <Text className="text-zinc-300 text-xl font-bold text-center">
-              {status === "streaming" ? "Препятствий не видно" : "Ожидание сервера"}
-            </Text>
-          )}
-          {obstacles.length > 1 && (
-            <Text className="text-zinc-400 text-sm text-center mt-1">ещё объектов: {obstacles.length - 1}</Text>
-          )}
-        </View>
+          </TouchableOpacity>
+        )}
 
         <TouchableOpacity
           className="bg-red-500 py-5 w-4/5 rounded-3xl items-center active:bg-red-600"
           onPress={onStop}
+          accessibilityRole="button"
+          accessibilityLabel="Остановить камеру"
         >
           <Text className="text-white text-2xl font-black uppercase text-center">Остановить</Text>
         </TouchableOpacity>
