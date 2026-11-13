@@ -19,14 +19,6 @@ export type Alert = "danger" | "warn" | "info" | "none";
 export type GroupType = "crowd" | "parking";
 export type Hint = "too_dark" | "blurry";
 
-
-/** Насколько свободно в разных направлениях кадра — для подсказок, как обойти препятствие. */
-export interface Clearance {
-  bearings: number[]; // направления по земле, градусы: < 0 левее, > 0 правее оси камеры
-  free: number[]; // свободно в этом направлении, м (коридор шириной с человека)
-  max: number; // free == max — свободно до предела анализа
-}
-
 /** Обстановка: толпа людей или парковка — одним сообщением вместо каждого объекта. */
 export interface Group {
   type: GroupType;
@@ -95,8 +87,6 @@ export interface ResultMessage {
   obstacles: Obstacle[];
   groups?: Group[];
   hints?: Hint[];
-  clearance?: Clearance | null;
-  ego?: number; // скорость пользователя вперёд по картинке, м/с
   server_ms: number;
   dropped: number;
 }

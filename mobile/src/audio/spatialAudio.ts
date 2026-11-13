@@ -21,7 +21,7 @@ const SOLID_TTC_S = 0.9; // ближе — непрерывный тон
 const SOLID_DIST_M = 0.8;
 const ALARM_INTERVAL_S = 0.9;
 const MASTER_GAIN = 1.25; // общая громкость сигналов
-const DUCK_GAIN = 0.12; // пока говорит голос — сигналы почти не слышны, чтобы не мешать словам
+const DUCK_GAIN = 0.5; // пока говорит голос
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
@@ -53,14 +53,7 @@ class SpatialAudio {
   private solid: { osc: OscillatorNode; gain: GainNode } | null = null;
   private lastUpdate = 0;
   private timer: ReturnType<typeof setInterval> | null = null;
-  private wasQuiet = false;
   enabled = true;
-  /**
-   * Человек стоит — сигнал о главной опасности молчит (вместо него голос подсказывает, как
-   * обойти). Проверяется каждые 20 мс: сделал шаг — сигнал сразу же возвращается.
-   * Тревога "едет на тебя" звучит всегда.
-   */
-  isQuiet: () => boolean = () => false;
 
   get supported() {
     return Platform.OS === "web" && typeof window !== "undefined" && "AudioContext" in window;
@@ -142,12 +135,8 @@ class SpatialAudio {
     const ctx = this.ctx;
     if (!ctx || ctx.state !== "running") return;
     const fresh = Date.now() - this.lastUpdate < STALE_MS;
-    const quiet = this.isQuiet();
+    const p = fresh && this.enabled ? this.primary : null;
     const now = ctx.currentTime;
-    if (this.wasQuiet && !quiet) this.nextBeep = 0; // пошёл — первый сигнал сразу
-    this.wasQuiet = quiet;
-    // Стоит — молчим о неподвижном; то, что само едет на тебя, — всё равно сигналим
-    const p = fresh && this.enabled && (!quiet || this.primary?.moving) ? this.primary : null;
 
     if (p && beepInterval(p) === 0) {
       this.startSolid(p);

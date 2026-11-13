@@ -3,7 +3,6 @@ import { Platform } from "react-native";
 import type { CameraView } from "expo-camera";
 import { cameraTilt, Vec3 } from "../sensors/cameraTilt";
 import {
-  Clearance,
   ConfigMessage,
   encodeFrame,
   Group,
@@ -51,12 +50,10 @@ export interface SceneState {
   obstacles: Obstacle[];
   groups: Group[];
   hints: Hint[];
-  clearance: Clearance | null;
-  ego: number | null;
 }
 
 const EMPTY_STATS: StreamStats = { fps: 0, rttMs: 0, serverMs: 0, frameKb: 0 };
-const EMPTY_SCENE: SceneState = { obstacles: [], groups: [], hints: [], clearance: null, ego: null };
+const EMPTY_SCENE: SceneState = { obstacles: [], groups: [], hints: [] };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const ema = (prev: number, next: number) => (prev ? prev * 0.8 + next * 0.2 : next);
 
@@ -181,13 +178,7 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
           frameKb: ema(s.frameKb, frame.byteLength / 1024),
         };
         lastLoop = now;
-        setScene({
-          obstacles: result.obstacles,
-          groups: result.groups ?? [],
-          hints: result.hints ?? [],
-          clearance: result.clearance ?? null,
-          ego: result.ego ?? null,
-        });
+        setScene({ obstacles: result.obstacles, groups: result.groups ?? [], hints: result.hints ?? [] });
         setStats(s);
       }
     };
@@ -256,8 +247,6 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
     obstacles: sceneState.obstacles,
     groups: sceneState.groups,
     hints: sceneState.hints,
-    clearance: sceneState.clearance,
-    ego: sceneState.ego,
     stats,
     frameSize,
     error,

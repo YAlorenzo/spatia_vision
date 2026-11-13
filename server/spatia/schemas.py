@@ -66,13 +66,6 @@ class Group(BaseModel):
     distance: float  # до ближайшего, м
 
 
-class Clearance(BaseModel):
-    """Насколько свободно в разных направлениях (в пределах кадра) — для подсказок обхода."""
-    bearings: list[float]  # направления по земле, градусы: < 0 левее, > 0 правее оси камеры
-    free: list[float]  # свободно в этом направлении, м (коридор шириной с человека)
-    max: float  # дальше не смотрим: free == max — "свободно до горизонта анализа"
-
-
 @dataclass
 class FrameDebug:
     """Внутренние данные для визуализации/отладки — клиенту не отправляются."""
@@ -83,7 +76,6 @@ class FrameDebug:
     ego_speed: float = 0.0  # оценка скорости пользователя вперёд, м/с
     groups: list[Group] = field(default_factory=list)
     hints: list[Hint] = field(default_factory=list)
-    clearance: Clearance | None = None
     timings_ms: dict[str, float] = field(default_factory=dict)
 
 

@@ -150,11 +150,6 @@ class Settings:
     presence_gap_s: float = 0.4  # пропуск кадров короче — серия не обрывается
     instant_range_m: float = 1.0
 
-    # --- Подсказки обхода (свободные направления) ---
-    guide_range_m: float = 6.0  # дальше этого "свободно"
-    guide_step_deg: float = 4.0  # шаг направлений
-    guide_edge_margin_deg: float = 6.0  # у края кадра коридор вблизи не виден — не оцениваем
-
     # --- Обстановка (толпа, парковка) ---
     crowd_range_m: float = 20.0
     crowd_min_people: int = 4  # столько людей рядом — толпа

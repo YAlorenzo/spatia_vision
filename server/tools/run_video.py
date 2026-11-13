@@ -189,8 +189,6 @@ def main() -> None:
                 "obstacles": [o.model_dump() for o in obstacles],
                 "groups": [g.model_dump() for g in dbg.groups],
                 "hints": list(dbg.hints),
-                "clearance": dbg.clearance.model_dump() if dbg.clearance else None,
-                "ego": round(dbg.ego_speed, 2),
             }, ensure_ascii=False) + "\n")
         if i >= 5:  # первые кадры — прогрев CUDA
             timings.append(dbg.timings_ms["total"])

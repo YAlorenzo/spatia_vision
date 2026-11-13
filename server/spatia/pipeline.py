@@ -23,7 +23,6 @@ from .context import SceneContext
 from .depth import DepthEstimator
 from .detection import Detector, Tracker
 from .free_space import ZONES, FreeSpaceAnalyzer
-from .guidance import clearance
 from .motion import EgoMotion, MotionEstimator
 from .schemas import Detection, DistanceEstimate, FrameDebug, Kind, Obstacle, TrackedObject, Zone
 from .spatial import zone_and_pan
@@ -193,9 +192,6 @@ class Session:
         self.threats.assess(objects, ego, focal, t_frame)
         # Толпа / парковка / слишком темно
         groups, hints = self.context.update(objects, gray, t_frame)
-        # Свободные направления в кадре — для подсказок, как обойти препятствие
-        half_fov = math.degrees(math.atan((fw / 2) / focal))
-        clear = clearance(free_dbg.points if free_dbg is not None else None, objects, half_fov, focal, self.s)
         objects.sort(key=lambda o: (not o.primary, not o.threat, o.distance.smoothed_m))
         t4 = time.perf_counter()
 
@@ -235,7 +231,6 @@ class Session:
             ego_speed=ego,
             groups=groups,
             hints=hints,
-            clearance=clear,
             timings_ms={
                 "detect": (t1 - t0) * 1000,
                 "depth": (t2 - t1) * 1000,
