@@ -91,6 +91,7 @@ class FreeSpaceDebug:
     plane: GroundPlane | None = None
     imu: bool = False  # "вверх" взято с датчика телефона
     points: np.ndarray | None = None  # (N, 2): препятствия на земле — X вбок, Z вперёд (для обхода)
+    ground_points: np.ndarray | None = None  # (N, 2): видимый пол на земле (для обхода)
 
 
 def _tolerance(pts: np.ndarray) -> np.ndarray:
@@ -245,6 +246,7 @@ class FreeSpaceAnalyzer:
         X, Zf = plane.to_ground(pts.reshape(-1, 3))
         X, Zf = X.reshape(gh, gw), Zf.reshape(gh, gw)
         dbg.ground = np.abs(h) < 0.08 + 0.03 * z
+        dbg.ground_points = np.stack([X[dbg.ground], Zf[dbg.ground]], axis=1)
         obst = (h > s.generic_min_height_m) & (h < s.generic_max_height_m) & (Zf > 0.2) & (Zf < s.generic_max_range_m)
 
         # Убираем то, что уже нашёл детектор (люди, машины, животные)

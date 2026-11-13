@@ -186,6 +186,14 @@ export class AnnouncerLogic {
       );
     }
 
+    // Для текущего препятствия появился (или сменился) проход — говорим сразу, даже на ходу
+    if (p && p.in_path && !p.moving && (bypass === "left" || bypass === "right")
+        && bypass !== this.guide.bypass && now - this.guide.at > GUIDE_CHANGE_MS) {
+      this.guide = { bypass, at: now };
+      this.guided = true;
+      return this.say(`Обход ${bypass === "left" ? "слева" : "справа"}`, false, now, false, true);
+    }
+
     // Стоит перед препятствием — совет, как обойти (сигнал в это время редкий и тихий)
     if (p && input.calm && p.in_path && !p.moving) {
       const b: Bypass = bypass ?? "none";

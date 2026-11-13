@@ -24,7 +24,7 @@ from .context import SceneContext
 from .depth import DepthEstimator
 from .detection import Detector, Tracker
 from .free_space import ZONES, FreeSpaceAnalyzer, GenericObstacle
-from .guidance import BypassAdvisor, clearance
+from .guidance import BypassAdvisor, lanes
 from .motion import EgoMotion, MotionEstimator
 from .schemas import Detection, DistanceEstimate, FrameDebug, Kind, Obstacle, TrackedObject, Zone
 from .spatial import zone_and_pan
@@ -224,9 +224,11 @@ class Session:
             self._held = (g, t_frame) if c is not None and c.threat else None
         # С какой стороны обойти главную опасность
         primary = next((o for o in objects if o.primary), None)
-        half_fov = math.degrees(math.atan((fw / 2) / focal))
-        bearings, free = clearance(free_dbg.points if free_dbg is not None else None, objects, half_fov, focal, self.s)
-        bypass = self.bypass.update(primary, bearings, free)
+        offsets: list[float] = []
+        lane_state: list[str] = []
+        if primary is not None and free_dbg is not None:
+            offsets, lane_state = lanes(free_dbg.points, free_dbg.ground_points, objects, primary, focal, self.s)
+        bypass = self.bypass.update(primary, offsets, lane_state)
         objects.sort(key=lambda o: (not o.primary, not o.threat, o.distance.smoothed_m))
         t4 = time.perf_counter()
 
@@ -267,6 +269,7 @@ class Session:
             groups=groups,
             hints=hints,
             bypass=bypass,
+            lanes=(offsets, lane_state),
             timings_ms={
                 "detect": (t1 - t0) * 1000,
                 "depth": (t2 - t1) * 1000,

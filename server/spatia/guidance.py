@@ -1,54 +1,58 @@
 """Совет, с какой стороны обойти препятствие.
 
-Для нескольких направлений в поле зрения камеры (bearing, градусы по земле: < 0 левее,
-> 0 правее) считается, насколько свободно, если пойти туда: коридор шириной с человека
-и расстояние до первого препятствия в нём. Препятствия — точки по карте глубины
-(всё, что выше пола) плюс найденные детектором люди/машины/животные.
+Человек обходит препятствие не по лучу под углом, а шагом в сторону и дальше параллельно.
+Поэтому проверяются ПОЛОСЫ — параллельные проходы шириной с человека, сдвинутые влево и
+вправо на 0.6…1.8 м. Полоса годится для обхода, если рядом с препятствием (от чуть ближе
+него до метра за ним):
+  - в ней нет препятствий (точки карты глубины выше пола, найденные люди/машины);
+  - в ней ВИДЕН пол — то, чего камера не видит, свободным не считается.
+Выбирается ближайшая к прямому пути годная полоса; сторона сглаживается по нескольким кадрам.
 
-Обход главной опасности — ближайшее к прямому направление, где свободно заметно дальше
-самого препятствия. Камера телефона вертикально видит по горизонтали всего ~40°, поэтому
-часто прохода в кадре нет ("none") — тогда клиент просит повернуть телефон и осмотреться.
+Камера телефона вертикально видит узко: в 1.5 м — полосу шириной ~1 м. Если сбоку пола
+не видно, ответ "none" — клиент просит повернуть телефон и осмотреться.
 """
-import math
+from collections import Counter, deque
 
 import numpy as np
 
 from .config import Settings
-from collections import Counter, deque
-
 from .schemas import Bypass, TrackedObject
 
 
-def clearance(points: np.ndarray | None, objects: list[TrackedObject], half_fov_deg: float,
-              focal: float, s: Settings) -> tuple[list[float], list[float]]:
-    """points — (N, 2) препятствия на земле: X вбок, Z вперёд."""
-    pts = [points] if points is not None and len(points) else []
+def lanes(obstacles: np.ndarray | None, ground: np.ndarray | None, objects: list[TrackedObject],
+          primary: TrackedObject, focal: float, s: Settings) -> tuple[list[float], list[str]]:
+    """Состояние полос для обхода primary. obstacles / ground — (N, 2): X вбок, Z вперёд по земле.
+    Возвращает (сдвиги полос в метрах, состояние каждой: free / blocked / unseen)."""
+    pts = [obstacles] if obstacles is not None and len(obstacles) else []
     for o in objects:
-        if o.kind == "obstacle" or o.forward_m > s.guide_range_m:
+        if o.kind == "obstacle":
             continue
         # Объект детектора — отрезок поперёк (по ширине рамки) на его дистанции
         x1, _, x2, _ = o.detection.box
-        half_w = max(0.2, (x2 - x1) / 2 * o.distance.smoothed_m / focal)
-        x = math.copysign(o.lateral_m, o.bearing_deg)
-        xs = np.linspace(x - half_w, x + half_w, 7)
+        half_w = max(0.25, (x2 - x1) / 2 * o.distance.smoothed_m / focal)
+        x = float(np.copysign(o.lateral_m, o.bearing_deg))
+        xs = np.linspace(x - half_w, x + half_w, 9)
         pts.append(np.stack([xs, np.full_like(xs, o.forward_m)], axis=1))
-    allp = np.concatenate(pts) if pts else np.zeros((0, 2))
-    allp = allp[(allp[:, 1] > 0.1) & (allp[:, 1] < s.guide_range_m)]
+    obst = np.concatenate(pts) if pts else np.zeros((0, 2))
+    grd = ground if ground is not None else np.zeros((0, 2))
 
-    # Направления внутри кадра (у самого края коридор вблизи не виден — отступаем)
-    lim = max(0.0, half_fov_deg - s.guide_edge_margin_deg)
-    n = max(1, int(lim // s.guide_step_deg))
-    bearings = [i * s.guide_step_deg for i in range(-n, n + 1)]
-    free: list[float] = []
-    half = s.corridor_half_width_m
-    for b in bearings:
-        r = math.radians(b)
-        ux, uz = math.sin(r), math.cos(r)
-        along = allp[:, 0] * ux + allp[:, 1] * uz
-        across = np.abs(allp[:, 0] * uz - allp[:, 1] * ux)
-        hit = (along > 0) & (across < half)
-        free.append(round(min(float(along[hit].min()), s.guide_range_m) if hit.any() else s.guide_range_m, 1))
-    return [float(b) for b in bearings], free
+    d = primary.forward_m
+    z0, z1 = max(0.3, d - s.bypass_before_m), d + s.bypass_beyond_m
+    obst = obst[obst[:, 1] < z1]  # всё, что ближе конца обхода (в т.ч. перед препятствием)
+    grd = grd[(grd[:, 1] > z0) & (grd[:, 1] < z1)]
+
+    n = int(round(s.bypass_max_shift_m / s.bypass_step_m))
+    offsets = [round(i * s.bypass_step_m, 2) for i in range(-n, n + 1)]
+    state: list[str] = []
+    for x in offsets:
+        if len(obst) and (np.abs(obst[:, 0] - x) < s.bypass_half_width_m).any():
+            state.append("blocked")
+            continue
+        g = grd[np.abs(grd[:, 0] - x) < s.bypass_half_width_m]
+        # Пол должен быть виден и рядом с препятствием, и за ним (а не одно пятно у ног)
+        seen = len(g) >= s.bypass_min_ground_cells and g[:, 1].max() >= d + 0.3 * s.bypass_beyond_m
+        state.append("free" if seen else "unseen")
+    return offsets, state
 
 
 class BypassAdvisor:
@@ -57,27 +61,24 @@ class BypassAdvisor:
     def __init__(self, s: Settings):
         self.s = s
         self.recent: deque[Bypass] = deque(maxlen=5)
+        self.side: Bypass | None = None
 
     def reset(self) -> None:
         self.recent.clear()
 
-    def update(self, primary: TrackedObject | None, bearings: list[float], free: list[float]) -> Bypass | None:
-        s = self.s
+    def update(self, primary: TrackedObject | None, offsets: list[float], state: list[str]) -> Bypass | None:
         if primary is None or not primary.in_path or primary.moving:
             self.recent.clear()
+            self.side = None
             return None
-        need = min(s.guide_range_m, max(3.5, primary.forward_m + s.bypass_extra_m))
-        ok = [f >= need for f in free]
-        best: float | None = None
-        for i, b in enumerate(bearings):
-            if abs(b) < s.bypass_min_deg or not ok[i]:
-                continue
-            # Надёжнее, если свободно и соседнее направление с той же стороны (не щель в 1 луч)
-            j = i + (1 if b > 0 else -1)
-            k = i - (1 if b > 0 else -1)
-            if not ((0 <= j < len(ok) and ok[j]) or (0 <= k < len(ok) and ok[k] and abs(bearings[k]) >= s.bypass_min_deg)):
-                continue
-            if best is None or abs(b) < abs(best):
-                best = b
-        self.recent.append("none" if best is None else "right" if best > 0 else "left")
-        return Counter(self.recent).most_common(1)[0][0]
+        free = [x for x, st in zip(offsets, state) if st == "free" and abs(x) >= self.s.bypass_min_shift_m]
+        best = min(free, key=abs, default=None)
+        side: Bypass = "none" if best is None else "right" if best > 0 else "left"
+        # Свободно с обеих сторон — не прыгаем: держим прежнюю сторону, пока она не намного хуже
+        if best is not None and self.side in ("left", "right") and self.side != side:
+            same = [x for x in free if (x > 0) == (self.side == "right")]
+            if same and min(abs(x) for x in same) <= abs(best) + self.s.bypass_keep_side_m:
+                side = self.side
+        self.recent.append(side)
+        self.side = Counter(self.recent).most_common(1)[0][0]
+        return self.side

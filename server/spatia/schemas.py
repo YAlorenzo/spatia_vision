@@ -79,6 +79,7 @@ class FrameDebug:
     groups: list[Group] = field(default_factory=list)
     hints: list[Hint] = field(default_factory=list)
     bypass: Bypass | None = None
+    lanes: tuple[list[float], list[str]] | None = None  # (сдвиги полос, free/blocked/unseen) — для отладки
     timings_ms: dict[str, float] = field(default_factory=dict)
 
 

@@ -233,6 +233,7 @@ def main() -> None:
                 "groups": [g.model_dump() for g in dbg.groups],
                 "hints": list(dbg.hints),
                 "bypass": dbg.bypass,
+                "lanes": dbg.lanes,
             }, ensure_ascii=False) + "\n")
         if i >= 5:  # первые кадры — прогрев CUDA
             timings.append(dbg.timings_ms["total"])
