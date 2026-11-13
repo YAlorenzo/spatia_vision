@@ -22,7 +22,7 @@
                     "alert":"danger|warn|info|none",
                     "urgency":"high|medium|low", "conf":0.8, "box":[x1,y1,x2,y2]}
          alert: danger — угроза (звук); warn — сказать голосом; info — показать; none — фон.
-         group: {"type":"crowd|parking", "zones":["left","center"], "count":5, "distance":4.2}
+         group: {"type":"crowd|parking|cluster", "zones":["left","center"], "count":5, "distance":4.2}
          hints: ["too_dark", "blurry"]
          bypass: "left" | "right" — с этой стороны главную опасность можно обойти;
                  "none" — прохода в кадре не видно; null — обходить нечего

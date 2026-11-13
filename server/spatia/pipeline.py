@@ -303,6 +303,13 @@ class Session:
                 primary=False, alert="info", conf=round(conf, 2),
                 box=(round(box[0] / fw, 3), round(box[1] / fh, 3), round(box[2] / fw, 3), round(box[3] / fh, 3)),
             ))
+        # Много предметов рядом — одной группой
+        cl = self.context.cluster(
+            [(e[3], e[2]) for e in extras] + [
+                (math.copysign(o.lateral_m, o.bearing_deg), o.distance.smoothed_m) for o in objects if o.kind == "obstacle"],
+            t_frame)
+        if cl is not None:
+            groups.append(cl)
         self.threats.note_aside(t_frame, [e[2] for e in extras] + [
             o.distance.smoothed_m for o in objects if o.kind == "obstacle" and o.zone != "center"])
 

@@ -225,7 +225,7 @@ export class AnnouncerLogic {
     for (const g of groups) {
       const zones = g.zones.join(",");
       const prev = this.groupSaid.get(g.type);
-      const repeat = g.type === "parking" ? PARKING_REPEAT_MS : CROWD_REPEAT_MS;
+      const repeat = g.type === "crowd" ? CROWD_REPEAT_MS : PARKING_REPEAT_MS; // парковка и группа объектов — раз в 30 с
       // Толпа сместилась (была слева — теперь впереди) — говорим, но не чаще раза в 10 с
       const changed = g.type === "crowd" && prev != null && prev.zones !== zones && now - prev.at > CROWD_CHANGE_MS;
       if (!prev || changed || now - prev.at > repeat) {
@@ -234,7 +234,7 @@ export class AnnouncerLogic {
         return this.say(again && g.type === "parking" ? "Вы всё ещё на парковке, осторожно" : groupRu(g), false, now);
       }
     }
-    for (const t of ["crowd", "parking"]) {
+    for (const t of ["crowd", "parking", "cluster"]) {
       // Группа пропала — следующий раз скажем сразу
       if (!groups.some((g) => g.type === t)) this.groupSaid.delete(t);
     }

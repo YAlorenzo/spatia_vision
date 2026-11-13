@@ -13,7 +13,7 @@ Kind = Literal["person", "vehicle", "animal", "obstacle"]
 #   info   — показать цветом, молчать (люди/машины ближе 13 м)
 #   none   — фон (статичное сбоку): серым
 Alert = Literal["danger", "warn", "info", "none"]
-GroupType = Literal["crowd", "parking"]
+GroupType = Literal["crowd", "parking", "cluster"]  # cluster — много предметов/препятствий рядом
 Hint = Literal["too_dark", "blurry"]
 # С какой стороны обойти главную опасность: left / right; none — прохода в кадре не видно
 Bypass = Literal["left", "right", "none"]

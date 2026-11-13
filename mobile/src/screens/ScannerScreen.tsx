@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Text, TouchableOpacity, View } from "react-native";
 import { CameraView } from "expo-camera";
 import { cssInterop } from "nativewind";
@@ -7,7 +7,7 @@ import { getServerUrl } from "../api/serverUrl";
 import { StreamStatus, useServerStream } from "../api/useServerStream";
 import { ObstacleOverlay } from "../components/ObstacleOverlay";
 import { useAudioFeedback, useConnectionWatchdog, useTiltAdvice } from "../audio/useAudioFeedback";
-import { describe, URGENCY_COLOR, zonesRu } from "../components/labels";
+import { describe, setLabelScene, URGENCY_COLOR, zonesRu } from "../components/labels";
 
 // CameraView — сторонний компонент, NativeWind должен знать, что className -> style
 cssInterop(CameraView, { className: "style" });
@@ -33,7 +33,7 @@ interface ScannerScreenProps {
 export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
   const cameraRef = useRef<CameraView | null>(null);
   const [cameraReady, setCameraReady] = useState(false);
-  const [scene, setScene] = useState<Scene>("outdoor");
+  const [scene, setScene] = useState<Scene>("indoor"); // по умолчанию — помещение; на улице переключить
   const [beeps, setBeeps] = useState(true);
   const [speech, setSpeech] = useState(true);
   const [vibration, setVibration] = useState(true);
@@ -47,6 +47,8 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
     scene,
   });
 
+  useEffect(() => setLabelScene(scene), [scene]);
+
   const active = status === "streaming";
   useAudioFeedback({ obstacles, groups, hints, bypass, active, beeps, speech, vibration });
   const tilt = useTiltAdvice(active);
@@ -59,7 +61,13 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
     ...(bypass === "left" ? ["Обход слева"] : bypass === "right" ? ["Обход справа"] : bypass === "none" ? ["Прохода не видно"] : []),
     ...(hints.includes("too_dark") ? ["Темно — остановитесь"] : []),
     ...(hints.includes("blurry") ? ["Размыто — остановитесь"] : []),
-    ...groups.map((g) => (g.type === "crowd" ? `Толпа ${zonesRu(g.zones)}` : "Парковка — осторожно")),
+    ...groups.map((g) =>
+      g.type === "crowd"
+        ? `Толпа ${zonesRu(g.zones)}`
+        : g.type === "cluster"
+          ? `Группа объектов ${zonesRu(g.zones)}`
+          : "Парковка — осторожно",
+    ),
     ...(tilt === "raise" ? ["Поднимите телефон выше"] : tilt === "lower" ? ["Опустите телефон"] : []),
   ];
 

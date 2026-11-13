@@ -316,9 +316,12 @@ class FreeSpaceAnalyzer:
             comp = np.isin(labels, np.unique(labels[near])) & keep & (Zf <= dist + 0.8)
             width = float(X[comp].max() - X[comp].min())
             top = float(h[comp].max())
+            # Стена вдоль пути видна "с ребра": узкая по ширине, но длинная в глубину — это не столб
+            full = np.isin(labels, np.unique(labels[near])) & keep
+            depth_len = float(Zf[full].max() - Zf[full].min())
             if top < s.shape_low_top_m:
                 shape = "low"
-            elif width >= s.shape_wall_width_m and top >= s.shape_tall_top_m:
+            elif top >= s.shape_tall_top_m and (width >= s.shape_wall_width_m or depth_len >= s.shape_wall_width_m):
                 shape = "wall"
             elif width <= s.shape_pole_width_m and top >= s.shape_tall_top_m:
                 shape = "pole"

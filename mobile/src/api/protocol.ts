@@ -16,7 +16,7 @@ export type Kind = "person" | "vehicle" | "animal" | "obstacle";
  *   none   — фон, серым (статичное сбоку).
  */
 export type Alert = "danger" | "warn" | "info" | "none";
-export type GroupType = "crowd" | "parking";
+export type GroupType = "crowd" | "parking" | "cluster"; // cluster — много предметов рядом
 export type Hint = "too_dark" | "blurry";
 /** С какой стороны обойти главную опасность; none — прохода в кадре не видно. */
 export type Bypass = "left" | "right" | "none";

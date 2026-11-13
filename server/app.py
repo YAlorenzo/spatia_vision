@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from spatia import Engine, Session, Settings
-from spatia.config import SERVER_DIR
+from spatia.config import DEPTH_MODELS, SERVER_DIR
 from spatia.protocol import Config, Error, Hello, Pose, Ready, Result, parse_frame
 from spatia.schemas import FrameDebug, Obstacle
 
@@ -42,6 +42,8 @@ engine: Engine | None = None
 async def lifespan(_: FastAPI):
     global engine
     engine = await asyncio.get_running_loop().run_in_executor(gpu, Engine, Settings())
+    # Клиент по умолчанию в режиме "Помещение" — грузим и эту модель заранее, чтобы не ждать при подключении
+    await asyncio.get_running_loop().run_in_executor(gpu, engine.depth, DEPTH_MODELS["indoor"])
     print("[server] модели загружены, жду подключений на /ws")
     yield
     gpu.shutdown(wait=False, cancel_futures=True)

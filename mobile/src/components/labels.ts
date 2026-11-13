@@ -1,4 +1,4 @@
-import type { Group, Obstacle, Urgency, Zone } from "../api/protocol";
+import type { Group, Obstacle, Scene, Urgency, Zone } from "../api/protocol";
 
 const CLASS_RU: Record<string, string> = {
   person: "Человек",
@@ -41,7 +41,13 @@ export const URGENCY_COLOR: Record<Urgency, string> = {
   low: "#22c55e",
 };
 
-export const classLabel = (cls: string) => CLASS_RU[cls] ?? cls;
+// В помещении деревьев нет: узкое высокое препятствие там — просто "Столб"
+let indoor = true;
+export function setLabelScene(scene: Scene) {
+  indoor = scene === "indoor";
+}
+
+export const classLabel = (cls: string) => (cls === "pole" && indoor ? "Столб" : (CLASS_RU[cls] ?? cls));
 
 /** "1 метр", "3 метра", "5 метров", "полтора метра", "меньше метра" — для речи и экрана. */
 export function metersRu(d: number): string {
@@ -109,5 +115,6 @@ export function warnRu(o: Obstacle): string {
 /** Фраза об обстановке. */
 export function groupRu(g: Group): string {
   if (g.type === "crowd") return `Толпа людей ${zonesRu(g.zones)}`;
+  if (g.type === "cluster") return `Массивная группа объектов ${zonesRu(g.zones)}`;
   return "Внимание, парковка";
 }

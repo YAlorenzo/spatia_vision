@@ -184,6 +184,8 @@ class Settings:
     crowd_range_m: float = 20.0
     crowd_min_people: int = 4  # столько людей рядом — толпа
     parking_range_m: float = 20.0
+    cluster_range_m: float = 6.0
+    cluster_min_objects: int = 6  # столько предметов/препятствий рядом — "массивная группа объектов"
     parking_min_vehicles: int = 3  # столько стоящих машин рядом — парковка
     context_enter_s: float = 1.0  # условие держится столько — включаем флаг
     context_exit_s: float = 4.0  # условие пропало на столько — выключаем

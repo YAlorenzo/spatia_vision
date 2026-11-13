@@ -41,13 +41,30 @@ class _Flag:
 class SceneContext:
     def __init__(self, s: Settings):
         self.s = s
-        self.flags: dict[GroupType, _Flag] = {"crowd": _Flag(), "parking": _Flag()}
+        self.flags: dict[GroupType, _Flag] = {"crowd": _Flag(), "parking": _Flag(), "cluster": _Flag()}
         self.last: dict[GroupType, Group] = {}
         self.dark = _Flag()
         self.blurry = _Flag()
 
     def reset(self) -> None:
         self.__init__(self.s)
+
+    def cluster(self, items: list[tuple[float, float]], t: float) -> Group | None:
+        """Массивная группа предметов (столы и стулья, заставленный угол): items — (x вбок, дистанция)
+        всех препятствий и предметов в кадре. Одной фразой вместо перечисления."""
+        s = self.s
+        near = [(x, d) for x, d in items if d <= s.cluster_range_m]
+        on = self.flags["cluster"].update(len(near) >= s.cluster_min_objects, t, s.context_enter_s, s.context_exit_s)
+        if not on:
+            self.last.pop("cluster", None)
+            return None
+        if near:
+            zone = lambda x: "center" if abs(x) < 0.6 else "left" if x < 0 else "right"  # noqa: E731
+            counts = {z: sum(zone(x) == z for x, _ in near) for z in ZONE_ORDER}
+            zones = [z for z in ZONE_ORDER if counts[z] >= 2] or [max(counts, key=counts.get)]  # type: ignore[arg-type]
+            self.last["cluster"] = Group(type="cluster", zones=zones, count=len(near),
+                                         distance=round(min(d for _, d in near), 1))
+        return self.last.get("cluster")
 
     def update(self, objects: list[TrackedObject], gray: np.ndarray, t: float) -> tuple[list[Group], list[Hint]]:
         s = self.s
