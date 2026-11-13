@@ -31,7 +31,8 @@ class ThreatAssessor:
         self.own_speed: dict[str, float] = {}
         self.lateral_speed: dict[str, float] = {}
         self.moving_since: dict[str, tuple[float, float]] = {}  # (начало серии "едет", последний кадр)
-        self.present_since: dict[str, tuple[float, float]] = {}  # (начало серии "виден", последний кадр)
+        # (начало серии "виден", последний кадр, дистанция)
+        self.present_since: dict[str, tuple[float, float, float]] = {}
         self.seen: dict[str, float] = {}
 
     def reset(self) -> None:
@@ -107,13 +108,17 @@ class ThreatAssessor:
                 # Неподвижное в коридоре. Стоишь — всё равно предупреждаем (можешь пойти),
                 # идёшь — по реальной скорости. Для едущего решает только CPA выше.
                 ttc = o.forward_m / max(o.approach_mps, s.walk_speed_mps)
-            # Сколько объект уже виден подряд. Мелькнувшее на секунду (надпись или тень на асфальте,
-            # ошибка глубины) — не угроза. Исключение — то, что уже вплотную.
-            since, last = self.present_since.get(k, (t, -1e9))
-            self.present_since[k] = (since if t - last < s.presence_gap_s else t, t)
+            # Сколько объект уже виден подряд. Мелькнувшее (надпись или тень на асфальте, ошибка
+            # глубины) — не угроза. Но на проверку тратим не больше четверти времени до
+            # столкновения: далёкое (6 м) проверяем ~1.2 с, близкое (2 м) — ~0.4 с, вплотную — сразу.
+            # Иначе препятствие, замеченное поздно, становилось угрозой, когда ты уже у него.
+            since, last, _ = self.present_since.get(k, (t, -1e9, d))
+            self.present_since[k] = (since if t - last < s.presence_gap_s else t, t, d)
             present_for = t - self.present_since[k][0]
-            need = s.confirm_obstacle_s if o.kind == "obstacle" else s.confirm_object_s
-            confirmed = present_for >= need or d <= s.instant_range_m
+            ttc_walk = o.forward_m / max(o.approach_mps if o.motion_valid else 0.0, s.walk_speed_mps)
+            cap = s.confirm_obstacle_s if o.kind == "obstacle" else s.confirm_object_s
+            need = min(cap, max(s.confirm_min_s, s.confirm_ttc_frac * ttc_walk))
+            confirmed = present_for >= need or d <= s.instant_range_m or self._seen_aside(o, t, need)
             if not confirmed:
                 ttc = None
 
@@ -122,7 +127,7 @@ class ThreatAssessor:
             o.urgency = _urgency(o.ttc_s if o.threat else None, s)
             o.alert = _alert(o, s, moving_for) if confirmed else ("info" if o.kind != "obstacle" else "none")
 
-        for k in [k for k, (_, last) in self.present_since.items() if t - last > 3.0]:
+        for k in [k for k, (_, last, _) in self.present_since.items() if t - last > 3.0]:
             self.present_since.pop(k, None)
         for k in [k for k, seen in self.seen.items() if t - seen > 3.0]:
             self.own_speed.pop(k, None)
@@ -131,6 +136,24 @@ class ThreatAssessor:
             self.seen.pop(k, None)
 
         threats = [o for o in objects if o.threat]
+        return self._pick_primary(threats, t)
+
+    def _seen_aside(self, o: TrackedObject, t: float, need: float) -> bool:
+        """Препятствие "на готове": только что было уверенно видно СБОКУ на той же дистанции —
+        человек повернулся, и оно оказалось впереди. Повторная проверка не нужна."""
+        if o.kind != "obstacle" or o.zone != "center":
+            return False
+        for k in _SIDE_KEYS:
+            rec = self.present_since.get(k)
+            if rec is None:
+                continue
+            since, last, dist = rec
+            if t - last < 1.0 and last - since >= need and abs(dist - o.distance.smoothed_m) < 1.0:
+                return True
+        return False
+
+    def _pick_primary(self, threats: list[TrackedObject], t: float) -> TrackedObject | None:
+        s = self.s
         best = min(threats, key=lambda o: o.ttc_s, default=None)  # type: ignore[arg-type, return-value]
         if best is not None and self.primary_key is not None:
             prev = next((o for o in threats if _key(o) == self.primary_key), None)
@@ -148,12 +171,16 @@ class ThreatAssessor:
         return best
 
 
+_SIDE_KEYS = ("obstacle:-1", "obstacle:-3")  # препятствия по глубине слева / справа
+
+
 def _alert(o: TrackedObject, s: Settings, moving_for: float) -> Alert:
     """Класс опасности: что озвучивать, что показывать, что убрать в фон."""
     if o.threat:
         return "danger"
     if o.kind == "obstacle":
-        return "none"  # статичное не на пути — фон
+        # Статичное сбоку — без звука, но в рамке "на готове": повернёшься — станет угрозой сразу
+        return "info"
     d = o.distance.smoothed_m
     if o.kind == "vehicle":
         if o.moving and d <= s.vehicle_warn_range_m and moving_for >= s.moving_confirm_s:

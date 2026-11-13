@@ -145,8 +145,10 @@ class Settings:
     danger_confirm_s: float = 0.3
     # Объект должен быть виден подряд столько, чтобы стать угрозой (мелькание — надпись
     # на асфальте, тень, ошибка глубины — игнорируем). Ближе instant_range_m — сразу.
-    confirm_obstacle_s: float = 1.5  # препятствие по глубине
-    confirm_object_s: float = 0.5  # человек / машина / животное
+    confirm_obstacle_s: float = 1.5  # препятствие по глубине — не дольше этого
+    confirm_object_s: float = 0.5  # человек / машина / животное — не дольше этого
+    confirm_ttc_frac: float = 0.25  # на проверку — не больше четверти времени до столкновения
+    confirm_min_s: float = 0.2  # и не меньше этого (2-3 кадра)
     presence_gap_s: float = 0.4  # пропуск кадров короче — серия не обрывается
     instant_range_m: float = 1.0
 
