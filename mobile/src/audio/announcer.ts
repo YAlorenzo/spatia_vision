@@ -52,7 +52,8 @@ const INTERRUPT_M = 3; // новая главная опасность ближ�
 const COMING_BANDS_M = [6, 3]; // приближающийся человек: на этих дистанциях — коротко "Человек, 5 метров"
 const GUIDE_REPEAT_MS = 7000; // стоишь перед препятствием — совет обхода повторяется
 const GUIDE_CHANGE_MS = 2500; // совет изменился (повернул телефон — появился проход)
-const FREE_AFTER_MS = 800; // препятствия нет столько — "впереди свободно"
+const FREE_AFTER_MS = 800; // препятствия нет столько — "путь свободен"
+const FREE_STALE_MS = 5000;
 
 export interface Utterance {
   text: string;
@@ -69,7 +70,9 @@ export interface AnnouncerInput {
   calm?: boolean; // человек стоит перед препятствием
 }
 
-const keyOf = (o: Obstacle) => `${o.kind}:${o.id ?? o.cls}`;
+// У препятствий по глубине id — это зона (-1/-2/-3), поэтому в ключ входит и название:
+// стена сменилась стулом в той же зоне — это новое препятствие, о нём надо сказать
+const keyOf = (o: Obstacle) => (o.kind === "obstacle" ? `obstacle:${o.id}:${o.cls}` : `${o.kind}:${o.id ?? o.cls}`);
 
 /** Чистая логика выбора фразы — без браузерных API. */
 export class AnnouncerLogic {
@@ -90,7 +93,7 @@ export class AnnouncerLogic {
   private tiltBadAt = 0; // когда наклон последний раз был плохим
   private comingBand = new Map<string, number>();
   private guide: { bypass: Bypass | null; at: number } = { bypass: null, at: -Infinity };
-  private guided = false; // давали совет обхода — потом скажем "впереди свободно"
+  private guided = false; // говорили о препятствии на пути — когда уйдёт, скажем "путь свободен"
   private lastPrimaryAt = 0;
   lastEndAt = 0; // когда закончилась последняя фраза (для паузы)
 
@@ -152,6 +155,7 @@ export class AnnouncerLogic {
         this.band = Math.min(Infinity, ...BANDS_M.filter((b) => p.distance < b)); // уже ближе этого порога
         if (now - (this.primarySaidAt.get(k) ?? -Infinity) >= SAME_PRIMARY_MS) {
           this.primarySaidAt.set(k, now);
+          this.guided = true;
           this.warnSaid.set(k, { reason: warnReason(p), at: now });
           // Сразу и совет, с какой стороны обойти (если сервер видит проход)
           const side = p.in_path && bypass === "left" ? ". Обход слева" : p.in_path && bypass === "right" ? ". Обход справа" : "";
@@ -164,6 +168,7 @@ export class AnnouncerLogic {
         if (crossed.length) {
           this.band = Math.min(...crossed);
           this.primarySaidAt.set(k, now);
+          this.guided = true;
           return this.say(metersRu(p.distance), false, now, false, true);
         }
       }
@@ -191,7 +196,7 @@ export class AnnouncerLogic {
         && bypass !== this.guide.bypass && now - this.guide.at > GUIDE_CHANGE_MS) {
       this.guide = { bypass, at: now };
       this.guided = true;
-      return this.say(`Обход ${bypass === "left" ? "слева" : "справа"}`, false, now, false, true);
+      return this.say(`${classLabel(p.cls)}, обход ${bypass === "left" ? "слева" : "справа"}`, false, now, false, true);
     }
 
     // Стоит перед препятствием — совет, как обойти (сигнал в это время редкий и тихий)
@@ -204,7 +209,7 @@ export class AnnouncerLogic {
         return this.say(
           b === "none"
             ? "Прохода не видно. Поверните телефон влево или вправо"
-            : `Обойдите ${b === "left" ? "слева" : "справа"}`,
+            : `${classLabel(p.cls)}, обойдите ${b === "left" ? "слева" : "справа"}`,
           false,
           now,
         );
@@ -212,7 +217,8 @@ export class AnnouncerLogic {
     }
     if (!p && this.guided && now - this.lastPrimaryAt > FREE_AFTER_MS) {
       this.guided = false;
-      return this.say("Впереди свободно", false, now);
+      // давно ушло (голос был занят) — уже не новость
+      if (now - this.lastPrimaryAt < FREE_STALE_MS) return this.say("Путь свободен", false, now);
     }
 
     // 5. Обстановка: парковка, толпа

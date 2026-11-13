@@ -14,6 +14,7 @@
 (гистерезис), чтобы звук не прыгал между объектами.
 """
 import math
+from collections import deque
 
 from .config import Settings
 from .schemas import Alert, TrackedObject, Urgency
@@ -34,6 +35,7 @@ class ThreatAssessor:
         # (начало серии "виден", последний кадр, дистанция)
         self.present_since: dict[str, tuple[float, float, float]] = {}
         self.seen: dict[str, float] = {}
+        self.aside: deque[tuple[float, float]] = deque()  # (время, дистанция) всего, что видели не на пути
 
     def reset(self) -> None:
         self.primary_key = None
@@ -150,7 +152,16 @@ class ThreatAssessor:
             since, last, dist = rec
             if t - last < 1.0 and last - since >= need and abs(dist - o.distance.smoothed_m) < 1.0:
                 return True
-        return False
+        # Всё остальное, что было в рамках (любые области препятствий и предметы в кадре):
+        # на этой дистанции что-то видели и давно (>= need), и только что (< 1 с)
+        near = [ta for ta, da in self.aside if abs(da - o.distance.smoothed_m) < 1.0]
+        return bool(near) and t - max(near) < 1.0 and t - min(near) >= need
+
+    def note_aside(self, t: float, distances: list[float]) -> None:
+        """Запомнить дистанции всего, что видно в кадре не на пути (память на ~3 с)."""
+        self.aside.extend((t, d) for d in distances)
+        while self.aside and t - self.aside[0][0] > 3.0:
+            self.aside.popleft()
 
     def _pick_primary(self, threats: list[TrackedObject], t: float) -> TrackedObject | None:
         s = self.s

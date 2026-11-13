@@ -20,7 +20,7 @@
 На каждую зону — одно ближайшее препятствие.
 """
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
@@ -93,6 +93,8 @@ class FreeSpaceDebug:
     fit_height: float | None = None  # высота камеры над полом, найденная в ЭТОМ кадре (None — пол не найден)
     points: np.ndarray | None = None  # (N, 2): препятствия на земле — X вбок, Z вперёд (для обхода)
     ground_points: np.ndarray | None = None  # (N, 2): видимый пол на земле (для обхода)
+    # Все области препятствий в кадре: (рамка в пикселях, дистанция вперёд, смещение вбок) — для показа и памяти
+    components: list[tuple[tuple[int, int, int, int], float, float]] = field(default_factory=list)
 
 
 def _tolerance(pts: np.ndarray) -> np.ndarray:
@@ -267,6 +269,19 @@ class FreeSpaceAnalyzer:
             if stats[i, cv2.CC_STAT_AREA] >= min_cells:
                 keep |= labels == i
         dbg.obstacles = keep
+        for i in range(1, count):
+            if stats[i, cv2.CC_STAT_AREA] < min_cells:
+                continue
+            cm = labels == i
+            zc = Zf[cm]
+            near_c = cm & (Zf <= np.percentile(zc, 30))
+            rows_c, cols_c = np.nonzero(near_c)
+            dbg.components.append((
+                (int(cols_c.min() * step), int(rows_c.min() * step),
+                 int(min(W, (cols_c.max() + 1) * step)), int(min(H, (rows_c.max() + 1) * step))),
+                float(np.percentile(zc, 10)),
+                float(np.median(X[near_c])),
+            ))
         dbg.points = np.stack([X[keep], Zf[keep]], axis=1)
         if not keep.any():
             return [], dbg

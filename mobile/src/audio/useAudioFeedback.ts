@@ -46,7 +46,7 @@ export function useAudioFeedback({ obstacles, groups, hints, bypass, active, bee
 
   useEffect(() => {
     if (!active) return;
-    spatialAudio.update(obstacles);
+    spatialAudio.update(obstacles, bypass);
     haptics.calm = spatialAudio.calm;
     haptics.update(obstacles);
     announcer.update({

@@ -116,6 +116,7 @@ class Settings:
     shape_pole_width_m: float = 0.5  # высокое и уже — "столб или дерево"
     # Подтверждённое препятствие на пути мигнуло (пропало на пару кадров) — держим его столько
     obstacle_hold_s: float = 0.6
+    max_extra_boxes: int = 8  # сколько дополнительных рамок (всё, что видно, без звука) слать клиенту
     # Неподвижные предметы, которые детектор знает по имени: ими подписываются препятствия по глубине
     static_classes: tuple[str, ...] = (
         "bench", "chair", "couch", "potted plant", "bed", "dining table", "toilet", "refrigerator",

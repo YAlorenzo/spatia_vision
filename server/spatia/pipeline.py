@@ -267,6 +267,45 @@ class Session:
             )
             for o in objects
         ]
+        # Всё остальное, что видно: области препятствий по глубине, не попавшие в три зоны, и предметы,
+        # которые знает детектор. Только рамка (alert=info), без звука и без участия в выборе главной
+        # опасности — но запоминаются: повернёшься к ним, и угроза включится без повторной проверки.
+        shown = [o.detection.box for o in objects if o.kind == "obstacle"]
+        extras: list[tuple[tuple[int, int, int, int], str, float, float, float]] = []  # рамка, имя, дистанция, x, conf
+
+        def inside(px: float, py: float, box: tuple[int, int, int, int]) -> bool:
+            return box[0] <= px <= box[2] and box[1] <= py <= box[3]
+
+        if free_dbg is not None:
+            for box, d_m, x_m in free_dbg.components:
+                if any(inside((b[0] + b[2]) / 2, (b[1] + b[3]) / 2, box) for b in shown):
+                    continue  # эта область уже показана как препятствие одной из зон
+                extras.append((box, GENERIC_CLASS, d_m, x_m, 0.5))
+        named = {(o.detection.cls, o.detection.box) for o in objects if o.kind == "obstacle"}
+        for det in statics:
+            cx, cy = (det.box[0] + det.box[2]) / 2, (det.box[1] + det.box[3]) / 2
+            if any(cls == det.cls and inside(cx, cy, box) for cls, box in named):
+                continue  # этим предметом уже подписано препятствие зоны
+            d_raw = dist.sample_depth(depth_map, det.box, self.s)
+            if d_raw is None:
+                continue
+            d_m = min(max(d_raw * scale, self.s.min_distance_m), self.s.max_distance_m)
+            pt = np.array([(cx - fw / 2) / focal, (cy - fh / 2) / focal, 1.0]) * d_m
+            extras.append((det.box, det.cls, d_m, float(plane.to_ground(pt)[0]), det.conf))
+        extras.sort(key=lambda e: e[2])
+        for i, (box, cls, d_m, x_m, conf) in enumerate(extras[: self.s.max_extra_boxes]):
+            zone, pan = zone_and_pan(box, fw)
+            obstacles.append(Obstacle(
+                id=-100 - i, kind="obstacle", cls=cls, zone="left" if x_m < 0 else "right", pan=pan,
+                distance=round(d_m, 2), urgency="low",
+                bearing=round(math.degrees(math.atan2(x_m, max(d_m, 0.1))), 1),
+                in_path=False, approach=0.0, own_speed=0.0, ttc=None, moving=False, threat=False,
+                primary=False, alert="info", conf=round(conf, 2),
+                box=(round(box[0] / fw, 3), round(box[1] / fh, 3), round(box[2] / fw, 3), round(box[3] / fh, 3)),
+            ))
+        self.threats.note_aside(t_frame, [e[2] for e in extras] + [
+            o.distance.smoothed_m for o in objects if o.kind == "obstacle" and o.zone != "center"])
+
         debug = FrameDebug(
             objects=objects,
             depth_map=depth_map,
