@@ -37,6 +37,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--video", default=str(SERVER_DIR / "test_video.mp4"))
     p.add_argument("--indoor", action="store_true", help="Depth Anything Indoor (до 20 м)")
     p.add_argument("--hfov", type=float, default=None, help="Угол обзора камеры по длинной стороне кадра, град.")
+    p.add_argument("--cam-height", type=float, default=None,
+                   help="Высота камеры над землёй, м (по умолчанию 1.35 — телефон в руке); 0 — не калибровать по полу")
     p.add_argument("--max-frames", type=int, default=0)
     p.add_argument("--width", type=int, default=640, help="Ужимать длинную сторону кадра до этого (как телефон), 0 — не ужимать")
     p.add_argument("--name", default=None, help="Имя папки в output/")
@@ -179,6 +181,8 @@ def main() -> None:
         settings.depth_model_id = DEPTH_MODELS["indoor"]
     if args.hfov:
         settings.camera_fov_deg = args.hfov
+    if args.cam_height is not None:
+        settings.camera_height_m = args.cam_height
 
     name = args.name or Path(args.video).stem
     out_dir = SERVER_DIR / "output" / name

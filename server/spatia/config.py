@@ -88,6 +88,9 @@ class Settings:
     disagreement_range: tuple[float, float] = (1.2, 2.0)
     auto_scale: bool = True  # калибровать масштаб глубины по людям/машинам в кадре
     auto_scale_alpha: float = 0.05
+    # Калибровка масштаба по полу: телефон держат в руке примерно на этой высоте. Работает всегда,
+    # когда виден пол (не нужны люди в кадре). 0 — выключить (камера на другой высоте: экшн-камера и т.п.)
+    camera_height_m: float = 1.35
     auto_scale_limits: tuple[float, float] = (0.25, 4.0)
     known_heights: dict[str, float] = field(default_factory=lambda: dict(KNOWN_HEIGHTS_M))
     min_distance_m: float = 0.3

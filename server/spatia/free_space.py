@@ -90,6 +90,7 @@ class FreeSpaceDebug:
     obstacles: np.ndarray | None = None  # bool-маска на сетке
     plane: GroundPlane | None = None
     imu: bool = False  # "вверх" взято с датчика телефона
+    fit_height: float | None = None  # высота камеры над полом, найденная в ЭТОМ кадре (None — пол не найден)
     points: np.ndarray | None = None  # (N, 2): препятствия на земле — X вбок, Z вперёд (для обхода)
     ground_points: np.ndarray | None = None  # (N, 2): видимый пол на земле (для обхода)
 
@@ -145,7 +146,7 @@ def _fit_plane(pts: np.ndarray, s: Settings, rng: np.random.Generator,
     if not plausible(normal):
         return None
     d = -normal @ centroid
-    if not 0.2 < d < 3.0:  # камера ниже 20 см или выше 3 м над "полом" — ошибка подгонки
+    if not 0.2 < d < 8.0:  # широкие границы: масштаб глубины может быть ещё не откалиброван
         return None
     return GroundPlane(normal=normal, height=float(d))
 
@@ -169,7 +170,7 @@ def _fit_height(pts: np.ndarray, up: np.ndarray, rng: np.random.Generator) -> fl
     if best_h is None or best_count < 0.25 * n:
         return None
     h = float(np.median(hs[np.abs(hs - best_h) < tol]))
-    return h if 0.2 < h < 3.0 else None
+    return h if 0.2 < h < 8.0 else None  # широкие границы: масштаб глубины может быть ещё не откалиброван
 
 
 class FreeSpaceAnalyzer:
@@ -236,11 +237,14 @@ class FreeSpaceAnalyzer:
             cand[: int(gh * 0.55)] = False
 
         if up is not None:
-            plane = self._update_with_imu(up, _fit_height(pts[cand], up, self.rng))
+            fit_h = _fit_height(pts[cand], up, self.rng)
+            plane = self._update_with_imu(up, fit_h)
         else:
             expected = self.plane.normal if self.plane.measured else None
-            plane = self._update_plane(_fit_plane(pts[cand], s, self.rng, expected))
-        dbg = FreeSpaceDebug(plane=plane, imu=up is not None)
+            fit = _fit_plane(pts[cand], s, self.rng, expected)
+            fit_h = None if fit is None else fit.height
+            plane = self._update_plane(fit)
+        dbg = FreeSpaceDebug(plane=plane, imu=up is not None, fit_height=fit_h)
 
         h = plane.height_above(pts.reshape(-1, 3)).reshape(gh, gw)
         X, Zf = plane.to_ground(pts.reshape(-1, 3))

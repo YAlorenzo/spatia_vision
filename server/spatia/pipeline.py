@@ -70,6 +70,7 @@ class Session:
         self.context = SceneContext(self.s)
         self.bypass = BypassAdvisor(self.s)
         self._held: tuple[GenericObstacle, float] | None = None  # последнее подтверждённое препятствие на пути
+        self._floor_raw: float | None = None  # высота камеры над полом в единицах модели глубины (прошлый кадр)
         self._names: dict[str, deque[str]] = {}  # последние названия препятствия по зонам
         self.frame_idx = 0
         self.configure(scene=scene, hfov_deg=hfov_deg)
@@ -134,7 +135,12 @@ class Session:
             raw.append((det, depth_m, geom_m))
 
         # Калибровка масштаба глубины по объектам известного размера в этом кадре
-        self.calibrator.update([(d, g) for _, d, g in raw if d is not None and g is not None])
+        pairs = [(d, g) for _, d, g in raw if d is not None and g is not None]
+        if self._floor_raw is not None and self.s.camera_height_m > 0:
+            # Пол — тоже "линейка": телефон в руке на известной высоте. Работает без людей в кадре —
+            # иначе при неверном масштабе пол "уезжал" на 3 м вниз и препятствия не находились вовсе
+            pairs.append((self._floor_raw, self.s.camera_height_m))
+        self.calibrator.update(pairs)
         scale = self.calibrator.scale
 
         # (детекция, тип, дистанция по глубине, по геометрии, смещение вбок или None, зона или None)
@@ -147,6 +153,7 @@ class Session:
         free_dbg = None
         if self.s.generic_obstacles:
             generic, free_dbg = self.free_space.analyze(depth_map * scale, detections, up)
+            self._floor_raw = None if free_dbg.fit_height is None else free_dbg.fit_height / scale
             real_center = any(g.zone == "center" for g in generic)
             if not real_center and self._held is not None and t_frame - self._held[1] < self.s.obstacle_hold_s:
                 # Подтверждённое препятствие на пути мигнуло — держим, чтобы сигнал не прерывался
