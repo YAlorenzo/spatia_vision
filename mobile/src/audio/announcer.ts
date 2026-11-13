@@ -1,5 +1,6 @@
 import { Platform } from "react-native";
-import type { Group, Hint, Obstacle } from "../api/protocol";
+import type { Clearance, Group, Hint, Obstacle } from "../api/protocol";
+import { GuideLogic } from "./guide";
 import type { TiltAdvice } from "../sensors/cameraTilt";
 import { classLabel, groupRu, metersRu, warnReason, warnRu, whereRu } from "../components/labels";
 
@@ -9,6 +10,8 @@ import { classLabel, groupRu, metersRu, warnReason, warnRu, whereRu } from "../c
  *   1. ОПАСНОСТЬ: что-то ЕДЕТ на тебя ("Осторожно! Машина слева"). Перебивает речь.
  *   2. Новая ГЛАВНАЯ опасность (primary): "Препятствие впереди, 3 метра".
  *   3. Главная опасность стала ближе (пересекла 3 м, 1.5 м): "Полтора метра".
+ *      (2–3 — пока человек идёт. Остановился — вместо них подсказки обхода, см. guide.ts:
+ *      "Свободно справа. Повернитесь направо", "Медленно поверните телефон налево"…)
  *   4. Камера плохо видит:
  *      - смотрит в пол/небо (датчик наклона): "Поднимите телефон выше" -> через 5 с ещё раз ->
  *        через 15 с "Остановитесь…" (и каждые 15 с, пока не поднимут);
@@ -59,6 +62,9 @@ export interface AnnouncerInput {
   groups: Group[];
   hints: Hint[];
   tilt: TiltAdvice | null;
+  still?: boolean; // человек стоит — подсказки обхода вместо "препятствие впереди"
+  clearance?: Clearance | null;
+  heading?: number | null;
 }
 
 const keyOf = (o: Obstacle) => `${o.kind}:${o.id ?? o.cls}`;
@@ -79,9 +85,11 @@ export class AnnouncerLogic {
   private tiltStage = 0; // сколько просьб про наклон уже сказано (0..3)
   private tiltAt = -Infinity;
   private tiltBadAt = 0; // когда наклон последний раз был плохим
+  readonly guide = new GuideLogic();
   lastEndAt = 0; // когда закончилась последняя фраза (для паузы)
 
   reset() {
+    this.guide.reset();
     this.tiltKind = null;
     this.tiltStage = 0;
     this.tiltAt = -Infinity;
@@ -98,7 +106,14 @@ export class AnnouncerLogic {
     this.lastEndAt = 0;
   }
 
-  pick({ obstacles, groups, hints, tilt }: AnnouncerInput, now: number, speaking: boolean): Utterance | null {
+  pick(input: AnnouncerInput, now: number, speaking: boolean): Utterance | null {
+    const { obstacles, groups, hints, tilt } = input;
+    const still = input.still ?? false;
+    const guideIn = { obstacles, clearance: input.clearance ?? null, heading: input.heading ?? null };
+    // Подсказки обхода копят "карту" свободных направлений даже пока голос занят
+    if (still) this.guide.observe(guideIn, now);
+    else this.guide.reset();
+
     // 1. Едет на тебя — сразу, перебивая
     const danger = obstacles
       .filter((o) => o.moving && o.threat && o.kind !== "obstacle")
@@ -115,6 +130,12 @@ export class AnnouncerLogic {
       }
     }
 
+    // Осматривается и камера нашла свободный проход — сразу, перебивая текущую фразу
+    if (still) {
+      const u = this.guide.urgent(guideIn, now);
+      if (u) return this.say(u, true, now);
+    }
+
     const p = obstacles.find((o) => o.primary);
     if (!p) {
       this.primaryKey = null;
@@ -122,7 +143,10 @@ export class AnnouncerLogic {
     }
     if (speaking || now - this.lastEndAt < GAP_MS) return null;
 
-    if (p) {
+    if (p && still) {
+      this.primaryKey = keyOf(p); // стоит — о препятствии расскажут подсказки обхода
+      this.band = Math.min(Infinity, ...BANDS_M.filter((b) => p.distance < b));
+    } else if (p) {
       const k = keyOf(p);
       // 2. Новая главная опасность
       if (k !== this.primaryKey) {
@@ -157,6 +181,12 @@ export class AnnouncerLogic {
         false,
         now,
       );
+    }
+
+    // Стоит перед препятствием — как обойти
+    if (still) {
+      const g = this.guide.pick(guideIn, now);
+      if (g) return this.say(g, false, now);
     }
 
     // 5. Обстановка: парковка, толпа

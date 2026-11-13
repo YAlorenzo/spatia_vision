@@ -89,6 +89,7 @@ class FreeSpaceDebug:
     obstacles: np.ndarray | None = None  # bool-маска на сетке
     plane: GroundPlane | None = None
     imu: bool = False  # "вверх" взято с датчика телефона
+    points: np.ndarray | None = None  # (N, 2): препятствия на земле — X вбок, Z вперёд (для обхода)
 
 
 def _tolerance(pts: np.ndarray) -> np.ndarray:
@@ -259,6 +260,7 @@ class FreeSpaceAnalyzer:
             if stats[i, cv2.CC_STAT_AREA] >= min_cells:
                 keep |= labels == i
         dbg.obstacles = keep
+        dbg.points = np.stack([X[keep], Zf[keep]], axis=1)
         if not keep.any():
             return [], dbg
 

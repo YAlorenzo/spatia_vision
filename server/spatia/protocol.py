@@ -23,7 +23,10 @@
                     "urgency":"high|medium|low", "conf":0.8, "box":[x1,y1,x2,y2]}
          alert: danger — угроза (звук); warn — сказать голосом; info — показать; none — фон.
          group: {"type":"crowd|parking", "zones":["left","center"], "count":5, "distance":4.2}
-         hints: ["too_dark"]
+         hints: ["too_dark", "blurry"]
+         clearance: {"bearings":[-12,-8,…,12], "free":[1.8,2.0,…,6.0], "max":6.0} — насколько свободно
+                    в каждом направлении кадра (градусы по земле, < 0 левее): для подсказок обхода
+         ego: 1.1 — скорость пользователя вперёд по картинке, м/с (запасной признак "стоит/идёт")
          Список отсортирован: сначала primary (главная опасность), потом угрозы, потом остальное.
          zone=center — коридор движения (в метрах), а не средняя треть кадра.
          kind=obstacle — найдено по карте глубины без класса (дерево, столб, стена...),
@@ -36,7 +39,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from .config import Scene
-from .schemas import Group, Hint, Obstacle
+from .schemas import Clearance, Group, Hint, Obstacle
 
 PROTOCOL_VERSION = 1
 FRAME_HEADER = struct.Struct(">I")  # seq: uint32 big-endian
@@ -77,7 +80,9 @@ class Result(BaseModel):
     seq: int
     obstacles: list[Obstacle]
     groups: list[Group] = []  # толпа / парковка
-    hints: list[Hint] = []  # подсказки по кадру: too_dark
+    hints: list[Hint] = []  # подсказки по кадру: too_dark, blurry
+    clearance: Clearance | None = None  # свободные направления в кадре (для подсказок обхода)
+    ego: float = 0.0  # оценка скорости пользователя вперёд по картинке, м/с
     server_ms: float
     dropped: int  # сколько кадров сервер выбросил как устаревшие (за сессию)
 

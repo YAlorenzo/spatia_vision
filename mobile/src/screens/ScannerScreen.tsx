@@ -6,7 +6,7 @@ import type { Scene } from "../api/protocol";
 import { getServerUrl } from "../api/serverUrl";
 import { StreamStatus, useServerStream } from "../api/useServerStream";
 import { ObstacleOverlay } from "../components/ObstacleOverlay";
-import { useAudioFeedback, useConnectionWatchdog, useTiltAdvice } from "../audio/useAudioFeedback";
+import { useAudioFeedback, useConnectionWatchdog, useStill, useTiltAdvice } from "../audio/useAudioFeedback";
 import { describe, URGENCY_COLOR, zonesRu } from "../components/labels";
 
 // CameraView — сторонний компонент, NativeWind должен знать, что className -> style
@@ -39,7 +39,7 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
   const [vibration, setVibration] = useState(true);
   const url = useMemo(() => getServerUrl(), []);
 
-  const { status, obstacles, groups, hints, stats, frameSize, error } = useServerStream({
+  const { status, obstacles, groups, hints, clearance, ego, stats, frameSize, error } = useServerStream({
     url,
     cameraRef,
     cameraReady,
@@ -48,7 +48,8 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
   });
 
   const active = status === "streaming";
-  useAudioFeedback({ obstacles, groups, hints, active, beeps, speech, vibration });
+  useAudioFeedback({ obstacles, groups, hints, clearance, ego, active, beeps, speech, vibration });
+  const still = useStill(active);
   const tilt = useTiltAdvice(active);
   const connectionLost = useConnectionWatchdog(obstacles, speech);
 
@@ -59,6 +60,7 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
     ...(hints.includes("too_dark") ? ["Темно — остановитесь"] : []),
     ...(hints.includes("blurry") ? ["Размыто — остановитесь"] : []),
     ...groups.map((g) => (g.type === "crowd" ? `Толпа ${zonesRu(g.zones)}` : "Парковка — осторожно")),
+    ...(still && primary ? ["Стоите — писк выключен, подсказки обхода"] : []),
     ...(tilt === "raise" ? ["Поднимите телефон выше"] : tilt === "lower" ? ["Опустите телефон"] : []),
   ];
 

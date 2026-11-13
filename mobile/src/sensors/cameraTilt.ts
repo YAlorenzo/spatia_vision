@@ -38,6 +38,7 @@ function screenAngle(): number {
 class CameraTilt {
   elevation: number | null = null; // градусы; null — датчика нет
   private up: Vec3 | null = null; // "вверх" в осях камеры
+  private headingDeg: number | null = null; // куда смотрит камера по горизонтали
   private updatedAt = 0;
   private badSince: number | null = null;
   private badKind: TiltAdvice | null = null;
@@ -57,6 +58,17 @@ class CameraTilt {
     const cy = -(Math.sin(a) * ux + Math.cos(a) * uy);
     this.up = [cx, cy, -uz];
     this.updatedAt = Date.now();
+
+    // Куда смотрит камера по горизонтали (градусы, по часовой). Через полную матрицу
+    // поворота, а не через alpha: при вертикальном телефоне alpha/gamma вырождаются.
+    // Нулевое направление произвольное (на Android — где был телефон при старте) —
+    // нам важны только повороты относительно него.
+    if (e.alpha != null) {
+      const al = e.alpha * rad;
+      const dx = -(Math.cos(al) * Math.sin(g) + Math.sin(al) * Math.sin(b) * Math.cos(g));
+      const dy = -(Math.sin(al) * Math.sin(g) - Math.cos(al) * Math.sin(b) * Math.cos(g));
+      this.headingDeg = Math.hypot(dx, dy) > 0.2 ? Math.atan2(dx, dy) / rad : null;
+    }
 
     const elev = Math.asin(Math.max(-1, Math.min(1, -uz))) / rad;
     this.elevation = elev;
@@ -88,6 +100,11 @@ class CameraTilt {
   /** "Вверх" в осях камеры (для сервера) или null, если датчика нет. */
   upVector(now: number): Vec3 | null {
     return this.up && now - this.updatedAt < STALE_MS ? this.up : null;
+  }
+
+  /** Куда смотрит камера по горизонтали, градусы по часовой (ноль произвольный); null — нет датчика. */
+  heading(now: number): number | null {
+    return now - this.updatedAt < STALE_MS ? this.headingDeg : null;
   }
 
   /** Совет по наклону, если плохой наклон держится долго; иначе null. */

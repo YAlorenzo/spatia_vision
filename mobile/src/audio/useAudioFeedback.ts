@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import type { Group, Hint, Obstacle } from "../api/protocol";
+import type { Clearance, Group, Hint, Obstacle } from "../api/protocol";
 import { cameraTilt, TiltAdvice } from "../sensors/cameraTilt";
+import { isStill, motionSensor, reportEgoSpeed, resetStillness } from "../sensors/motionSensor";
 import { announcer } from "./announcer";
 import { haptics } from "./haptics";
 import { spatialAudio } from "./spatialAudio";
@@ -10,12 +11,19 @@ export function unlockAudio() {
   spatialAudio.unlock();
   announcer.unlock();
   cameraTilt.unlock();
+  motionSensor.unlock();
 }
+
+// Звук и вибрация проверяют это каждые 20–50 мс: стоит — молчат о неподвижном, шаг — сразу звучат
+spatialAudio.isQuiet = () => isStill(Date.now());
+haptics.isQuiet = () => isStill(Date.now());
 
 interface Options {
   obstacles: Obstacle[];
   groups: Group[];
   hints: Hint[];
+  clearance: Clearance | null;
+  ego: number | null;
   active: boolean; // идёт сканирование и есть связь
   beeps: boolean;
   speech: boolean;
@@ -23,7 +31,7 @@ interface Options {
 }
 
 /** Подаёт результаты сервера в звук, вибрацию и голос. */
-export function useAudioFeedback({ obstacles, groups, hints, active, beeps, speech, vibration }: Options) {
+export function useAudioFeedback({ obstacles, groups, hints, clearance, ego, active, beeps, speech, vibration }: Options) {
   useEffect(() => {
     spatialAudio.enabled = beeps;
     announcer.enabled = speech;
@@ -40,15 +48,26 @@ export function useAudioFeedback({ obstacles, groups, hints, active, beeps, spee
       haptics.stop();
       announcer.stop();
       announcer.onSpeakingChange = null;
+      resetStillness();
     };
   }, [active]);
 
   useEffect(() => {
     if (!active) return;
+    const now = Date.now();
+    reportEgoSpeed(ego, now);
     spatialAudio.update(obstacles);
     haptics.update(obstacles);
-    announcer.update({ obstacles, groups, hints, tilt: cameraTilt.advice(Date.now()) });
-  }, [obstacles, groups, hints, active]);
+    announcer.update({
+      obstacles,
+      groups,
+      hints,
+      tilt: cameraTilt.advice(now),
+      still: isStill(now),
+      clearance,
+      heading: cameraTilt.heading(now),
+    });
+  }, [obstacles, groups, hints, clearance, ego, active]);
 }
 
 const NO_DATA_MS = 3000; // столько нет ответов сервера — "нет связи"
@@ -80,6 +99,20 @@ export function useConnectionWatchdog(obstacles: Obstacle[], speech: boolean): b
     return () => clearInterval(id);
   }, [speech]);
   return lost;
+}
+
+/** Человек стоит (писк выключен, идут подсказки обхода) — для экрана. */
+export function useStill(active: boolean): boolean {
+  const [still, setStill] = useState(false);
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => setStill(isStill(Date.now())), 300);
+    return () => {
+      clearInterval(id);
+      setStill(false);
+    };
+  }, [active]);
+  return still;
 }
 
 /** Совет по наклону телефона для экрана (обновляется дважды в секунду). */

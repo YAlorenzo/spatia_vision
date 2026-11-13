@@ -21,7 +21,7 @@ from pydantic import ValidationError
 from spatia import Engine, Session, Settings
 from spatia.config import SERVER_DIR
 from spatia.protocol import Config, Error, Hello, Pose, Ready, Result, parse_frame
-from spatia.schemas import Group, Obstacle
+from spatia.schemas import FrameDebug, Obstacle
 
 WEB_DIST = SERVER_DIR.parent / "mobile" / "dist"
 HELLO_TIMEOUT_S = 10
@@ -66,7 +66,7 @@ class FrameSlot:
         return item
 
 
-def process_jpeg(session: Session, jpeg: bytes, up: np.ndarray | None) -> tuple[list[Obstacle], list[Group], list[str]] | None:
+def process_jpeg(session: Session, jpeg: bytes, up: np.ndarray | None) -> tuple[list[Obstacle], FrameDebug] | None:
     frame = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
     if frame is None:
         return None
@@ -81,7 +81,7 @@ def process_jpeg(session: Session, jpeg: bytes, up: np.ndarray | None) -> tuple[
                 print(f"[moving] {o.detection.cls}#{o.detection.track_id} d={o.distance.smoothed_m:.1f} "
                       f"approach={o.approach_mps:+.2f} own={o.own_speed_mps:+.2f} "
                       f"side={o.lateral_speed_mps:+.2f} ego={dbg.ego_speed:+.2f}")
-    return obstacles, dbg.groups, list(dbg.hints)
+    return obstacles, dbg
 
 
 async def send(ws: WebSocket, msg) -> None:
@@ -102,12 +102,14 @@ async def process_loop(ws: WebSocket, session: Session, slot: FrameSlot) -> None
         if out is None:
             await send(ws, Error(message=f"кадр {seq}: не удалось декодировать JPEG"))
             continue
-        obstacles, groups, hints = out
+        obstacles, dbg = out
         await send(ws, Result(
             seq=seq,
             obstacles=obstacles,
-            groups=groups,
-            hints=hints,  # type: ignore[arg-type]
+            groups=dbg.groups,
+            hints=dbg.hints,
+            clearance=dbg.clearance,
+            ego=round(dbg.ego_speed, 2),
             server_ms=round((loop.time() - t0) * 1000, 1),
             dropped=slot.dropped,
         ))
