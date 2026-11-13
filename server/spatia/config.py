@@ -106,6 +106,26 @@ class Settings:
     generic_max_height_m: float = 2.0  # выше — над головой, не мешает
     generic_min_area: float = 0.004  # минимальная доля кадра, чтобы не реагировать на шум
     generic_side_max_m: float = 2.0  # препятствия сбоку дальше этого (в сторону) не интересны
+    # Название по форме (когда детектор не знает, что это)
+    shape_low_top_m: float = 0.9  # ниже — "низкое препятствие" (бордюр, тумба, ящик)
+    shape_tall_top_m: float = 1.3  # выше — "высокое"
+    shape_wall_width_m: float = 1.8  # высокое и шире — "стена"
+    shape_pole_width_m: float = 0.5  # высокое и уже — "столб или дерево"
+    # Подтверждённое препятствие на пути мигнуло (пропало на пару кадров) — держим его столько
+    obstacle_hold_s: float = 0.6
+    # Неподвижные предметы, которые детектор знает по имени: ими подписываются препятствия по глубине
+    static_classes: tuple[str, ...] = (
+        "bench", "chair", "couch", "potted plant", "bed", "dining table", "toilet", "refrigerator",
+        "fire hydrant", "stop sign", "parking meter", "suitcase", "sink", "tv",
+    )
+    static_conf: float = 0.4
+
+    # --- Советы обхода (свободные направления) ---
+    guide_range_m: float = 6.0  # дальше этого "свободно"
+    guide_step_deg: float = 4.0  # шаг направлений
+    guide_edge_margin_deg: float = 4.0  # у края кадра коридор вблизи не виден — не оцениваем
+    bypass_min_deg: float = 8.0  # обход — направление не ближе этого к прямому
+    bypass_extra_m: float = 1.5  # в сторону обхода должно быть свободно на столько дальше препятствия
     # Оценка плоскости пола (RANSAC по нижней части кадра)
     ground_iterations: int = 80
     # Без датчика телефона и до первой оценки пола: насколько камера может быть наклонена к полу

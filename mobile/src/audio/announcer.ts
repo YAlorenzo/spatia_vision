@@ -1,5 +1,5 @@
 import { Platform } from "react-native";
-import type { Group, Hint, Obstacle } from "../api/protocol";
+import type { Bypass, Group, Hint, Obstacle } from "../api/protocol";
 import type { TiltAdvice } from "../sensors/cameraTilt";
 import { classLabel, groupRu, metersRu, warnReason, warnRu, whereRu } from "../components/labels";
 
@@ -47,11 +47,17 @@ const TILT_TEXT: Record<TiltAdvice, [string, string, string]> = {
   ],
 };
 const UNCLEAR_REPEAT_MS = 8000; // камера плохо видит — просим остановиться
-const GAP_MS = 700; // пауза между обычными фразами, чтобы не сливались
+const GAP_MS = 400; // пауза между обычными фразами, чтобы не сливались
+const INTERRUPT_M = 3; // новая главная опасность ближе — перебивает обычную фразу
+const COMING_BANDS_M = [6, 3]; // приближающийся человек: на этих дистанциях — коротко "Человек, 5 метров"
+const GUIDE_REPEAT_MS = 7000; // стоишь перед препятствием — совет обхода повторяется
+const GUIDE_CHANGE_MS = 2500; // совет изменился (повернул телефон — появился проход)
+const FREE_AFTER_MS = 800; // препятствия нет столько — "впереди свободно"
 
 export interface Utterance {
   text: string;
   danger: boolean;
+  interrupt?: boolean; // перебить текущую фразу (не тревогу)
 }
 
 export interface AnnouncerInput {
@@ -59,6 +65,8 @@ export interface AnnouncerInput {
   groups: Group[];
   hints: Hint[];
   tilt: TiltAdvice | null;
+  bypass?: Bypass | null; // с какой стороны обойти главную опасность
+  calm?: boolean; // человек стоит перед препятствием
 }
 
 const keyOf = (o: Obstacle) => `${o.kind}:${o.id ?? o.cls}`;
@@ -75,13 +83,21 @@ export class AnnouncerLogic {
   private lastText = { text: "", at: 0 };
   private lastDangerAt = -Infinity;
   private lastWasDanger = false;
+  private lastWasPrimary = false; // последняя фраза была о главной опасности
   private tiltKind: TiltAdvice | null = null;
   private tiltStage = 0; // сколько просьб про наклон уже сказано (0..3)
   private tiltAt = -Infinity;
   private tiltBadAt = 0; // когда наклон последний раз был плохим
+  private comingBand = new Map<string, number>();
+  private guide: { bypass: Bypass | null; at: number } = { bypass: null, at: -Infinity };
+  private guided = false; // давали совет обхода — потом скажем "впереди свободно"
+  private lastPrimaryAt = 0;
   lastEndAt = 0; // когда закончилась последняя фраза (для паузы)
 
   reset() {
+    this.comingBand.clear();
+    this.guide = { bypass: null, at: -Infinity };
+    this.guided = false;
     this.tiltKind = null;
     this.tiltStage = 0;
     this.tiltAt = -Infinity;
@@ -98,7 +114,9 @@ export class AnnouncerLogic {
     this.lastEndAt = 0;
   }
 
-  pick({ obstacles, groups, hints, tilt }: AnnouncerInput, now: number, speaking: boolean): Utterance | null {
+  pick(input: AnnouncerInput, now: number, speaking: boolean): Utterance | null {
+    const { obstacles, groups, hints, tilt } = input;
+    const bypass = input.bypass ?? null;
     // 1. Едет на тебя — сразу, перебивая
     const danger = obstacles
       .filter((o) => o.moving && o.threat && o.kind !== "obstacle")
@@ -120,29 +138,38 @@ export class AnnouncerLogic {
       this.primaryKey = null;
       this.band = Infinity;
     }
-    if (speaking || now - this.lastEndAt < GAP_MS) return null;
+    const quiet = !speaking && now - this.lastEndAt >= GAP_MS;
 
     if (p) {
+      this.lastPrimaryAt = now;
       const k = keyOf(p);
-      // 2. Новая главная опасность
+      // 2. Новая главная опасность. Близкая (< 3 м) перебивает обычную фразу — ждать некогда
       if (k !== this.primaryKey) {
+        // ...но только второстепенную (парковка, толпа, советы), не другую фразу об опасности
+        const urgent = speaking && !this.lastWasDanger && !this.lastWasPrimary && p.distance < INTERRUPT_M;
+        if (!quiet && !urgent) return null;
         this.primaryKey = k;
         this.band = Math.min(Infinity, ...BANDS_M.filter((b) => p.distance < b)); // уже ближе этого порога
         if (now - (this.primarySaidAt.get(k) ?? -Infinity) >= SAME_PRIMARY_MS) {
           this.primarySaidAt.set(k, now);
           this.warnSaid.set(k, { reason: warnReason(p), at: now });
-          return this.say(`${classLabel(p.cls)} ${whereRu(p)}, ${metersRu(p.distance)}`, false, now);
+          // Сразу и совет, с какой стороны обойти (если сервер видит проход)
+          const side = p.in_path && bypass === "left" ? ". Обход слева" : p.in_path && bypass === "right" ? ". Обход справа" : "";
+          this.guide = { bypass: side ? bypass : null, at: now };
+          return this.say(`${classLabel(p.cls)} ${whereRu(p)}, ${metersRu(p.distance)}${side}`, false, now, urgent, true);
         }
-      } else {
+      } else if (quiet) {
         // 3. Та же опасность пересекла следующий порог — коротко, одним числом
         const crossed = BANDS_M.filter((b) => b < this.band && p.distance < b);
         if (crossed.length) {
           this.band = Math.min(...crossed);
           this.primarySaidAt.set(k, now);
-          return this.say(metersRu(p.distance), false, now);
+          return this.say(metersRu(p.distance), false, now, false, true);
         }
       }
     }
+
+    if (!quiet) return null;
 
     // 4. Камера плохо видит — по такому кадру ничего надёжно не определить: просим остановиться
     const tiltText = this.tiltAdvice(tilt, now);
@@ -157,6 +184,27 @@ export class AnnouncerLogic {
         false,
         now,
       );
+    }
+
+    // Стоит перед препятствием — совет, как обойти (сигнал в это время редкий и тихий)
+    if (p && input.calm && p.in_path && !p.moving) {
+      const b: Bypass = bypass ?? "none";
+      const wait = b !== this.guide.bypass ? GUIDE_CHANGE_MS : GUIDE_REPEAT_MS;
+      if (now - this.guide.at > wait) {
+        this.guide = { bypass: b, at: now };
+        this.guided = true;
+        return this.say(
+          b === "none"
+            ? "Прохода не видно. Поверните телефон влево или вправо"
+            : `Обойдите ${b === "left" ? "слева" : "справа"}`,
+          false,
+          now,
+        );
+      }
+    }
+    if (!p && this.guided && now - this.lastPrimaryAt > FREE_AFTER_MS) {
+      this.guided = false;
+      return this.say("Впереди свободно", false, now);
     }
 
     // 5. Обстановка: парковка, толпа
@@ -190,7 +238,19 @@ export class AnnouncerLogic {
       const reason = warnReason(o);
       const prev = this.warnSaid.get(k);
       // Недавно говорили — повторяем, только если причина стала серьёзнее (стоял сбоку -> пошёл к тебе)
-      if (prev && now - prev.at < WARN_REPEAT_MS && warnRankOf(reason) >= warnRankOf(prev.reason)) continue;
+      if (prev && now - prev.at < WARN_REPEAT_MS && warnRankOf(reason) >= warnRankOf(prev.reason)) {
+        // Тот же человек продолжает приближаться — только расстояние, коротко
+        if (reason === "coming") {
+          const band = this.comingBand.get(k) ?? Infinity;
+          const crossed = COMING_BANDS_M.filter((b) => b < band && o.distance < b);
+          if (crossed.length) {
+            this.comingBand.set(k, Math.min(...crossed));
+            return this.say(`${classLabel(o.cls)}, ${metersRu(o.distance)}`, false, now);
+          }
+        }
+        continue;
+      }
+      if (reason === "coming") this.comingBand.set(k, Math.min(Infinity, ...COMING_BANDS_M.filter((b) => o.distance < b)));
       this.warnSaid.set(k, { reason, at: now });
       return this.say(warnRu(o), false, now);
     }
@@ -222,11 +282,12 @@ export class AnnouncerLogic {
     return TILT_TEXT[tilt][Math.min(stage, 2)];
   }
 
-  private say(text: string, danger: boolean, now: number): Utterance | null {
+  private say(text: string, danger: boolean, now: number, interrupt = false, primary = false): Utterance | null {
     if (!danger && text === this.lastText.text && now - this.lastText.at < 3000) return null;
     this.lastText = { text, at: now };
     this.lastWasDanger = danger;
-    return { text, danger };
+    this.lastWasPrimary = primary;
+    return { text, danger, interrupt };
   }
 }
 
@@ -263,11 +324,11 @@ class Announcer {
     const synth = window.speechSynthesis;
     const u = this.logic.pick(input, Date.now(), synth.speaking);
     if (!u) return;
-    if (u.danger) synth.cancel();
+    if (u.danger || u.interrupt) synth.cancel();
     const utt = new SpeechSynthesisUtterance(u.text);
     utt.lang = "ru-RU";
     if (this.voice) utt.voice = this.voice;
-    utt.rate = 1.25;
+    utt.rate = 1.35;
     utt.volume = 1;
     utt.onstart = () => this.onSpeakingChange?.(true);
     utt.onend = utt.onerror = () => {

@@ -81,6 +81,7 @@ class GenericObstacle:
     x_m: float  # смещение ближайшей точки вбок по земле (< 0 — слева)
     box: tuple[int, int, int, int]  # пиксели полного кадра
     area: float  # доля кадра
+    shape: str = "obstacle"  # по форме: wall (широкое и высокое) / pole (узкое и высокое) / low / obstacle
 
 
 @dataclass
@@ -89,6 +90,7 @@ class FreeSpaceDebug:
     obstacles: np.ndarray | None = None  # bool-маска на сетке
     plane: GroundPlane | None = None
     imu: bool = False  # "вверх" взято с датчика телефона
+    points: np.ndarray | None = None  # (N, 2): препятствия на земле — X вбок, Z вперёд (для обхода)
 
 
 def _tolerance(pts: np.ndarray) -> np.ndarray:
@@ -259,6 +261,7 @@ class FreeSpaceAnalyzer:
             if stats[i, cv2.CC_STAT_AREA] >= min_cells:
                 keep |= labels == i
         dbg.obstacles = keep
+        dbg.points = np.stack([X[keep], Zf[keep]], axis=1)
         if not keep.any():
             return [], dbg
 
@@ -287,5 +290,18 @@ class FreeSpaceAnalyzer:
             )
             xs = X[near]
             x_near = float(xs[np.argmin(np.abs(xs))])
-            result.append(GenericObstacle(zone, dist, x_near, box, float(zm.sum()) / (gh * gw)))
+            # Форма: вся связная область, к которой относится ближняя часть (не только полоса зоны),
+            # на той же дистанции. Широкая и высокая — стена, узкая и высокая — столб/ствол.
+            comp = np.isin(labels, np.unique(labels[near])) & keep & (Zf <= dist + 0.8)
+            width = float(X[comp].max() - X[comp].min())
+            top = float(h[comp].max())
+            if top < s.shape_low_top_m:
+                shape = "low"
+            elif width >= s.shape_wall_width_m and top >= s.shape_tall_top_m:
+                shape = "wall"
+            elif width <= s.shape_pole_width_m and top >= s.shape_tall_top_m:
+                shape = "pole"
+            else:
+                shape = "obstacle"
+            result.append(GenericObstacle(zone, dist, x_near, box, float(zm.sum()) / (gh * gw), shape))
         return result, dbg

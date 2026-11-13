@@ -39,7 +39,7 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
   const [vibration, setVibration] = useState(true);
   const url = useMemo(() => getServerUrl(), []);
 
-  const { status, obstacles, groups, hints, stats, frameSize, error } = useServerStream({
+  const { status, obstacles, groups, hints, bypass, stats, frameSize, error } = useServerStream({
     url,
     cameraRef,
     cameraReady,
@@ -48,7 +48,7 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
   });
 
   const active = status === "streaming";
-  useAudioFeedback({ obstacles, groups, hints, active, beeps, speech, vibration });
+  useAudioFeedback({ obstacles, groups, hints, bypass, active, beeps, speech, vibration });
   const tilt = useTiltAdvice(active);
   const connectionLost = useConnectionWatchdog(obstacles, speech);
 
@@ -56,6 +56,7 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
   const otherThreats = obstacles.filter((o) => o.threat && !o.primary).length;
   const notices = [
     ...(connectionLost ? ["Нет связи — остановитесь"] : []),
+    ...(bypass === "left" ? ["Обход слева"] : bypass === "right" ? ["Обход справа"] : bypass === "none" ? ["Прохода не видно"] : []),
     ...(hints.includes("too_dark") ? ["Темно — остановитесь"] : []),
     ...(hints.includes("blurry") ? ["Размыто — остановитесь"] : []),
     ...groups.map((g) => (g.type === "crowd" ? `Толпа ${zonesRu(g.zones)}` : "Парковка — осторожно")),

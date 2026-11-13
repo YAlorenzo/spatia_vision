@@ -23,7 +23,11 @@
                     "urgency":"high|medium|low", "conf":0.8, "box":[x1,y1,x2,y2]}
          alert: danger — угроза (звук); warn — сказать голосом; info — показать; none — фон.
          group: {"type":"crowd|parking", "zones":["left","center"], "count":5, "distance":4.2}
-         hints: ["too_dark"]
+         hints: ["too_dark", "blurry"]
+         bypass: "left" | "right" — с этой стороны главную опасность можно обойти;
+                 "none" — прохода в кадре не видно; null — обходить нечего
+         cls у kind=obstacle: предмет по детектору (bench, chair, fire hydrant...), иначе по форме:
+                 wall (стена) / pole (столб или дерево) / low (низкое), иначе obstacle
          Список отсортирован: сначала primary (главная опасность), потом угрозы, потом остальное.
          zone=center — коридор движения (в метрах), а не средняя треть кадра.
          kind=obstacle — найдено по карте глубины без класса (дерево, столб, стена...),
@@ -36,7 +40,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from .config import Scene
-from .schemas import Group, Hint, Obstacle
+from .schemas import Bypass, Group, Hint, Obstacle
 
 PROTOCOL_VERSION = 1
 FRAME_HEADER = struct.Struct(">I")  # seq: uint32 big-endian
@@ -77,7 +81,8 @@ class Result(BaseModel):
     seq: int
     obstacles: list[Obstacle]
     groups: list[Group] = []  # толпа / парковка
-    hints: list[Hint] = []  # подсказки по кадру: too_dark
+    hints: list[Hint] = []  # подсказки по кадру: too_dark, blurry
+    bypass: Bypass | None = None  # с какой стороны обойти главную опасность (none — прохода не видно)
     server_ms: float
     dropped: int  # сколько кадров сервер выбросил как устаревшие (за сессию)
 

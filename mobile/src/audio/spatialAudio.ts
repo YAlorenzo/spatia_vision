@@ -21,7 +21,13 @@ const SOLID_TTC_S = 0.9; // ближе — непрерывный тон
 const SOLID_DIST_M = 0.8;
 const ALARM_INTERVAL_S = 0.9;
 const MASTER_GAIN = 1.25; // общая громкость сигналов
-const DUCK_GAIN = 0.5; // пока говорит голос
+const DUCK_GAIN = 0.15; // пока говорит голос — сигналы почти не слышны, слова важнее
+// "Спокойный режим": человек стоит перед препятствием — сигнал не выключается, но редкий и тихий
+const CALM_AFTER_MS = 2000; // столько не приближается — стоит
+const CALM_APPROACH_MPS = 0.2;
+const CALM_STEP_M = 0.3; // подошёл ближе на столько — идёт, сигнал сразу обычный
+const CALM_INTERVAL_S = 1.6;
+const CALM_LEVEL = 0.3;
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
@@ -53,6 +59,10 @@ class SpatialAudio {
   private solid: { osc: OscillatorNode; gain: GainNode } | null = null;
   private lastUpdate = 0;
   private timer: ReturnType<typeof setInterval> | null = null;
+  private calmSince: number | null = null;
+  private calmDist = 0;
+  /** Человек стоит перед препятствием: сигнал редкий и тихий, голос подсказывает обход. */
+  calm = false;
   enabled = true;
 
   get supported() {
@@ -104,6 +114,7 @@ class SpatialAudio {
     const prevKey = this.primary ? `${this.primary.kind}:${this.primary.id}` : null;
     this.primary = obstacles.find((o) => o.primary) ?? null;
     this.alarm = obstacles.find((o) => o.moving && o.threat && !o.primary) ?? null;
+    this.updateCalm(prevKey);
     if (!this.ctx) return;
     if (this.primary) {
       this.place(this.panner!, this.primary.bearing);
@@ -111,6 +122,31 @@ class SpatialAudio {
       if (`${this.primary.kind}:${this.primary.id}` !== prevKey) this.nextBeep = 0;
     }
     if (this.alarm) this.place(this.alarmPanner!, this.alarm.bearing);
+  }
+
+  /** Стоит ли человек: главная опасность неподвижна и не приближается 2 с. */
+  private updateCalm(prevKey: string | null) {
+    const p = this.primary;
+    const now = Date.now();
+    const same = p != null && `${p.kind}:${p.id}` === prevKey;
+    const stays =
+      p != null &&
+      !p.moving &&
+      same &&
+      Math.abs(p.approach) < CALM_APPROACH_MPS &&
+      (this.calmSince == null || p.distance > this.calmDist - CALM_STEP_M);
+    if (!stays) {
+      if (this.calm) this.nextBeep = 0; // пошёл — обычный сигнал сразу
+      this.calm = false;
+      this.calmSince = null;
+      return;
+    }
+    if (this.calmSince == null) {
+      this.calmSince = now;
+      this.calmDist = p!.distance;
+    } else if (now - this.calmSince >= CALM_AFTER_MS) {
+      this.calm = true;
+    }
   }
 
   /** Приглушить сигналы, пока говорит голос (но не до тишины — опасность важнее). */
@@ -128,6 +164,8 @@ class SpatialAudio {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     this.primary = this.alarm = null;
+    this.calm = false;
+    this.calmSince = null;
     this.stopSolid();
   }
 
@@ -138,7 +176,14 @@ class SpatialAudio {
     const p = fresh && this.enabled ? this.primary : null;
     const now = ctx.currentTime;
 
-    if (p && beepInterval(p) === 0) {
+    if (p && this.calm) {
+      // Стоит: редкий тихий сигнал "препятствие всё ещё здесь", без непрерывного тона
+      this.stopSolid();
+      if (now >= this.nextBeep) {
+        this.beep(this.panner!, p, CALM_LEVEL);
+        this.nextBeep = now + CALM_INTERVAL_S;
+      }
+    } else if (p && beepInterval(p) === 0) {
       this.startSolid(p);
     } else {
       this.stopSolid();

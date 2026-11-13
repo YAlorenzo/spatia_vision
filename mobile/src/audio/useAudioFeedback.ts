@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { Group, Hint, Obstacle } from "../api/protocol";
+import type { Bypass, Group, Hint, Obstacle } from "../api/protocol";
 import { cameraTilt, TiltAdvice } from "../sensors/cameraTilt";
 import { announcer } from "./announcer";
 import { haptics } from "./haptics";
@@ -16,6 +16,7 @@ interface Options {
   obstacles: Obstacle[];
   groups: Group[];
   hints: Hint[];
+  bypass: Bypass | null;
   active: boolean; // идёт сканирование и есть связь
   beeps: boolean;
   speech: boolean;
@@ -23,7 +24,7 @@ interface Options {
 }
 
 /** Подаёт результаты сервера в звук, вибрацию и голос. */
-export function useAudioFeedback({ obstacles, groups, hints, active, beeps, speech, vibration }: Options) {
+export function useAudioFeedback({ obstacles, groups, hints, bypass, active, beeps, speech, vibration }: Options) {
   useEffect(() => {
     spatialAudio.enabled = beeps;
     announcer.enabled = speech;
@@ -46,9 +47,17 @@ export function useAudioFeedback({ obstacles, groups, hints, active, beeps, spee
   useEffect(() => {
     if (!active) return;
     spatialAudio.update(obstacles);
+    haptics.calm = spatialAudio.calm;
     haptics.update(obstacles);
-    announcer.update({ obstacles, groups, hints, tilt: cameraTilt.advice(Date.now()) });
-  }, [obstacles, groups, hints, active]);
+    announcer.update({
+      obstacles,
+      groups,
+      hints,
+      tilt: cameraTilt.advice(Date.now()),
+      bypass,
+      calm: spatialAudio.calm,
+    });
+  }, [obstacles, groups, hints, bypass, active]);
 }
 
 const NO_DATA_MS = 3000; // столько нет ответов сервера — "нет связи"

@@ -9,6 +9,7 @@ Session — состояние одного клиента (трекинг, сг
   2. Карта глубины — всё остальное, без классов (деревья, столбы, стены...).
 """
 import dataclasses
+from collections import Counter, deque
 import math
 import threading
 import time
@@ -22,7 +23,8 @@ from .config import DEPTH_MODELS, GENERIC_CLASS, Scene, Settings
 from .context import SceneContext
 from .depth import DepthEstimator
 from .detection import Detector, Tracker
-from .free_space import ZONES, FreeSpaceAnalyzer
+from .free_space import ZONES, FreeSpaceAnalyzer, GenericObstacle
+from .guidance import BypassAdvisor, clearance
 from .motion import EgoMotion, MotionEstimator
 from .schemas import Detection, DistanceEstimate, FrameDebug, Kind, Obstacle, TrackedObject, Zone
 from .spatial import zone_and_pan
@@ -66,6 +68,9 @@ class Session:
         self.ego = EgoMotion(self.s)
         self.threats = ThreatAssessor(self.s)
         self.context = SceneContext(self.s)
+        self.bypass = BypassAdvisor(self.s)
+        self._held: tuple[GenericObstacle, float] | None = None  # последнее подтверждённое препятствие на пути
+        self._names: dict[str, deque[str]] = {}  # последние названия препятствия по зонам
         self.frame_idx = 0
         self.configure(scene=scene, hfov_deg=hfov_deg)
 
@@ -84,6 +89,22 @@ class Session:
             self.ego.reset()
         self.depth = self.engine.depth(self.s.depth_model_id)
 
+    def _name(self, g: GenericObstacle, statics: list[Detection]) -> str:
+        """Название препятствия по глубине: предмет, который знает детектор (скамейка, стул...),
+        иначе по форме (стена / столб / низкое), иначе просто "obstacle". Берётся самое частое
+        за последние кадры — чтобы название не прыгало."""
+        name = g.shape if g.shape != "obstacle" else GENERIC_CLASS
+        gx, gy = (g.box[0] + g.box[2]) / 2, (g.box[1] + g.box[3]) / 2
+        for d in statics:
+            x1, y1, x2, y2 = d.box
+            ix = max(0, min(x2, g.box[2]) - max(x1, g.box[0])) * max(0, min(y2, g.box[3]) - max(y1, g.box[1]))
+            if x1 <= gx <= x2 and y1 <= gy <= y2 or ix > 0.5 * (x2 - x1) * (y2 - y1):
+                name = d.cls
+                break
+        hist = self._names.setdefault(g.zone, deque(maxlen=7))
+        hist.append(name)
+        return Counter(hist).most_common(1)[0][0]
+
     def process(self, frame_bgr: np.ndarray, timestamp: float | None = None,
                 up: np.ndarray | None = None) -> tuple[list[Obstacle], FrameDebug]:
         """timestamp — время кадра в секундах (для скорости). По умолчанию — текущее.
@@ -91,7 +112,7 @@ class Session:
         ориентации телефона; без него наклон оценивается по полу."""
         t_frame = time.monotonic() if timestamp is None else timestamp
         t0 = time.perf_counter()
-        boxes = self.engine.detector.detect(frame_bgr)
+        boxes, statics = self.engine.detector.split(self.engine.detector.detect(frame_bgr))
         if self.tracker is not None:
             detections = self.tracker.update(boxes, frame_bgr)
         else:
@@ -126,8 +147,12 @@ class Session:
         free_dbg = None
         if self.s.generic_obstacles:
             generic, free_dbg = self.free_space.analyze(depth_map * scale, detections, up)
+            real_center = any(g.zone == "center" for g in generic)
+            if not real_center and self._held is not None and t_frame - self._held[1] < self.s.obstacle_hold_s:
+                # Подтверждённое препятствие на пути мигнуло — держим, чтобы сигнал не прерывался
+                generic.append(self._held[0])
             for g in generic:
-                det = Detection(track_id=-(ZONES.index(g.zone) + 1), cls=GENERIC_CLASS,
+                det = Detection(track_id=-(ZONES.index(g.zone) + 1), cls=self._name(g, statics),
                                 conf=min(1.0, round(g.area * 20, 2)), box=g.box)
                 candidates.append((det, "obstacle", g.distance_m, None, g.x_m, g.zone))
         t3 = time.perf_counter()
@@ -192,6 +217,16 @@ class Session:
         self.threats.assess(objects, ego, focal, t_frame)
         # Толпа / парковка / слишком темно
         groups, hints = self.context.update(objects, gray, t_frame)
+        # Запоминаем подтверждённое препятствие на пути (для удержания при мигании)
+        if free_dbg is not None and real_center:
+            c = next((o for o in objects if o.kind == "obstacle" and o.zone == "center"), None)
+            g = next(g for g in generic if g.zone == "center")
+            self._held = (g, t_frame) if c is not None and c.threat else None
+        # С какой стороны обойти главную опасность
+        primary = next((o for o in objects if o.primary), None)
+        half_fov = math.degrees(math.atan((fw / 2) / focal))
+        bearings, free = clearance(free_dbg.points if free_dbg is not None else None, objects, half_fov, focal, self.s)
+        bypass = self.bypass.update(primary, bearings, free)
         objects.sort(key=lambda o: (not o.primary, not o.threat, o.distance.smoothed_m))
         t4 = time.perf_counter()
 
@@ -231,6 +266,7 @@ class Session:
             ego_speed=ego,
             groups=groups,
             hints=hints,
+            bypass=bypass,
             timings_ms={
                 "detect": (t1 - t0) * 1000,
                 "depth": (t2 - t1) * 1000,

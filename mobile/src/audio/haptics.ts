@@ -28,6 +28,8 @@ class Haptics {
   private solidUntil = 0;
   private dangerAt = new Map<string, number>();
   private timer: ReturnType<typeof setInterval> | null = null;
+  /** Человек стоит перед препятствием — не вибрируем без конца. */
+  calm = false;
 
   get supported() {
     return Platform.OS === "web" && typeof navigator !== "undefined" && typeof navigator.vibrate === "function";
@@ -71,7 +73,7 @@ class Haptics {
       }
     }
 
-    const p = this.primary;
+    const p = this.calm ? null : this.primary;
     const close = p && (p.distance <= START_DIST_M || (p.ttc != null && p.ttc <= START_TTC_S));
     if (!p || !close) {
       if (this.solidUntil > now) navigator.vibrate(0);

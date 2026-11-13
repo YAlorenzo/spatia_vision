@@ -18,6 +18,8 @@ export type Kind = "person" | "vehicle" | "animal" | "obstacle";
 export type Alert = "danger" | "warn" | "info" | "none";
 export type GroupType = "crowd" | "parking";
 export type Hint = "too_dark" | "blurry";
+/** С какой стороны обойти главную опасность; none — прохода в кадре не видно. */
+export type Bypass = "left" | "right" | "none";
 
 /** Обстановка: толпа людей или парковка — одним сообщением вместо каждого объекта. */
 export interface Group {
@@ -87,6 +89,7 @@ export interface ResultMessage {
   obstacles: Obstacle[];
   groups?: Group[];
   hints?: Hint[];
+  bypass?: Bypass | null;
   server_ms: number;
   dropped: number;
 }

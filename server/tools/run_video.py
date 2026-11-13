@@ -116,10 +116,52 @@ def annotate(frame: np.ndarray, dbg: FrameDebug, label: str) -> np.ndarray:
             hud += " (prior)"
     hud += f" | me {dbg.ego_speed:+.1f}m/s"
     _text(out, hud, (10, h - 12), (255, 255, 255), 0.55)
+    if dbg.bypass:
+        _text(out, f"BYPASS {dbg.bypass.upper()}", (10, 46), (0, 255, 120), 0.7)
     flags = [f"{g.type.upper()} {'/'.join(g.zones)} x{g.count}" for g in dbg.groups] + [x.upper() for x in dbg.hints]
     if flags:
         _text(out, " | ".join(flags), (10, 22), (0, 220, 255), 0.7)
     return out
+
+
+class Recording:
+    """Запись сессии с телефона (SPATIA_RECORD=1): папка с JPEG и frames.jsonl (время, наклон).
+    Интерфейс как у cv2.VideoCapture — чтобы проигрывать тем же циклом."""
+
+    def __init__(self, path: Path):
+        self.dir = path
+        f = path / "frames.jsonl"
+        self.items = [json.loads(line) for line in f.read_text(encoding="utf-8").splitlines()] if f.exists() else []
+        self.pos = 0
+        self.t = 0.0
+        self.up = None
+
+    def isOpened(self) -> bool:
+        return bool(self.items)
+
+    def get(self, prop: int) -> float:
+        if prop == cv2.CAP_PROP_FRAME_COUNT:
+            return len(self.items)
+        if prop == cv2.CAP_PROP_FPS and len(self.items) > 1:
+            return (len(self.items) - 1) / max(self.items[-1]["t"] - self.items[0]["t"], 1e-3)
+        return 0.0
+
+    def grab(self) -> bool:
+        self.pos += 1
+        return self.pos <= len(self.items)
+
+    def read(self):
+        if self.pos >= len(self.items):
+            return False, None
+        it = self.items[self.pos]
+        self.pos += 1
+        self.t = it["t"]
+        self.up = None if it.get("up") is None else np.array(it["up"], dtype=np.float64)
+        frame = cv2.imread(str(self.dir / it["file"]))
+        return frame is not None, frame
+
+    def release(self) -> None:
+        pass
 
 
 def jitter_pct(values: list[float]) -> float | None:
@@ -148,7 +190,8 @@ def main() -> None:
     session = Engine(settings).new_session()
     label = session.depth.name
     is_webcam = args.video.isdigit()  # --video 0 = веб-камера ноутбука
-    cap = cv2.VideoCapture(int(args.video) if is_webcam else args.video)
+    rec = Recording(Path(args.video)) if Path(args.video).is_dir() else None  # запись сессии с телефона
+    cap = rec or cv2.VideoCapture(int(args.video) if is_webcam else args.video)
     if not cap.isOpened():
         sys.exit(f"Не удалось открыть видео: {args.video}")
     fps_in = cap.get(cv2.CAP_PROP_FPS) or 30
@@ -181,14 +224,15 @@ def main() -> None:
         if args.width and max(frame.shape[:2]) > args.width:  # как телефон: длинная сторона ~640px
             k = args.width / max(frame.shape[:2])
             frame = cv2.resize(frame, (round(frame.shape[1] * k), round(frame.shape[0] * k)), interpolation=cv2.INTER_AREA)
-        t_video = time.perf_counter() - t_start if is_webcam else src_pos / fps_in
-        obstacles, dbg = session.process(frame, timestamp=None if is_webcam else t_video)
+        t_video = rec.t if rec else time.perf_counter() - t_start if is_webcam else src_pos / fps_in
+        obstacles, dbg = session.process(frame, timestamp=None if is_webcam else t_video, up=rec.up if rec else None)
         if dump is not None:
             dump.write(json.dumps({
                 "t": round(t_video, 3),
                 "obstacles": [o.model_dump() for o in obstacles],
                 "groups": [g.model_dump() for g in dbg.groups],
                 "hints": list(dbg.hints),
+                "bypass": dbg.bypass,
             }, ensure_ascii=False) + "\n")
         if i >= 5:  # первые кадры — прогрев CUDA
             timings.append(dbg.timings_ms["total"])

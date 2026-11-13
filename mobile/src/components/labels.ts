@@ -14,6 +14,25 @@ const CLASS_RU: Record<string, string> = {
   cow: "Корова",
   sheep: "Овца",
   obstacle: "Препятствие",
+  // препятствия по глубине, названные по форме
+  wall: "Стена",
+  pole: "Столб или дерево",
+  low: "Низкое препятствие",
+  // неподвижные предметы, которые знает детектор
+  bench: "Скамейка",
+  chair: "Стул",
+  couch: "Диван",
+  "potted plant": "Вазон",
+  bed: "Кровать",
+  "dining table": "Стол",
+  toilet: "Унитаз",
+  refrigerator: "Холодильник",
+  "fire hydrant": "Гидрант",
+  "stop sign": "Дорожный знак",
+  "parking meter": "Паркомат",
+  suitcase: "Чемодан",
+  sink: "Раковина",
+  tv: "Телевизор",
 };
 
 export const URGENCY_COLOR: Record<Urgency, string> = {
@@ -81,7 +100,7 @@ export function warnRu(o: Obstacle): string {
     case "moving":
       return o.kind === "vehicle" ? `Едет ${cls.toLowerCase()} ${where}, ${m}` : `${cls} бежит ${where}, ${m}`;
     case "coming":
-      return `${cls} идёт к вам ${where}, ${m}`;
+      return `${cls} приближается ${where}`; // коротко; дальше — только расстояние
     default:
       return `${cls} ${where}, ${m}`;
   }
@@ -90,5 +109,5 @@ export function warnRu(o: Obstacle): string {
 /** Фраза об обстановке. */
 export function groupRu(g: Group): string {
   if (g.type === "crowd") return `Толпа людей ${zonesRu(g.zones)}`;
-  return "Внимание, парковка. Зона повышенной опасности";
+  return "Внимание, парковка";
 }

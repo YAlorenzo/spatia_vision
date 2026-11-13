@@ -17,7 +17,9 @@ class Detector:
         self.device = device
         self.model = YOLO(str(settings.yolo_weights))
         self.names: dict[int, str] = self.model.names
-        self.allowed_ids = [i for i, n in self.names.items() if n in settings.dynamic_classes]
+        self.dynamic_ids = [i for i, n in self.names.items() if n in settings.dynamic_classes]
+        self.static_ids = [i for i, n in self.names.items() if n in settings.static_classes]
+        self.allowed_ids = self.dynamic_ids + self.static_ids
 
     def detect(self, frame_bgr: np.ndarray):
         """Возвращает ultralytics Boxes (numpy) — их понимает и трекер."""
@@ -31,6 +33,18 @@ class Detector:
             verbose=False,
         )[0]
         return result.boxes.cpu().numpy()
+
+    def split(self, boxes):
+        """Boxes -> (то, что может двигаться: в трекер; неподвижные предметы с именем: list[Detection])."""
+        if len(boxes) == 0:
+            return boxes, []
+        dyn = np.isin(boxes.cls, self.dynamic_ids)
+        static = [
+            Detection(track_id=None, cls=self.names[int(c)], conf=float(p), box=tuple(int(v) for v in b))
+            for b, c, p in zip(boxes.xyxy[~dyn], boxes.cls[~dyn], boxes.conf[~dyn])
+            if p >= self.s.static_conf
+        ]
+        return boxes[dyn], static
 
     def to_detections(self, boxes) -> list[Detection]:
         return [

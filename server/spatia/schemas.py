@@ -15,6 +15,8 @@ Kind = Literal["person", "vehicle", "animal", "obstacle"]
 Alert = Literal["danger", "warn", "info", "none"]
 GroupType = Literal["crowd", "parking"]
 Hint = Literal["too_dark", "blurry"]
+# С какой стороны обойти главную опасность: left / right; none — прохода в кадре не видно
+Bypass = Literal["left", "right", "none"]
 
 
 @dataclass
@@ -76,6 +78,7 @@ class FrameDebug:
     ego_speed: float = 0.0  # оценка скорости пользователя вперёд, м/с
     groups: list[Group] = field(default_factory=list)
     hints: list[Hint] = field(default_factory=list)
+    bypass: Bypass | None = None
     timings_ms: dict[str, float] = field(default_factory=dict)
 
 

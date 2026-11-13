@@ -8,6 +8,7 @@ import {
   Group,
   HelloMessage,
   Hint,
+  Bypass,
   Obstacle,
   PoseMessage,
   PROTOCOL_VERSION,
@@ -50,10 +51,11 @@ export interface SceneState {
   obstacles: Obstacle[];
   groups: Group[];
   hints: Hint[];
+  bypass: Bypass | null;
 }
 
 const EMPTY_STATS: StreamStats = { fps: 0, rttMs: 0, serverMs: 0, frameKb: 0 };
-const EMPTY_SCENE: SceneState = { obstacles: [], groups: [], hints: [] };
+const EMPTY_SCENE: SceneState = { obstacles: [], groups: [], hints: [], bypass: null };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const ema = (prev: number, next: number) => (prev ? prev * 0.8 + next * 0.2 : next);
 
@@ -178,7 +180,12 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
           frameKb: ema(s.frameKb, frame.byteLength / 1024),
         };
         lastLoop = now;
-        setScene({ obstacles: result.obstacles, groups: result.groups ?? [], hints: result.hints ?? [] });
+        setScene({
+          obstacles: result.obstacles,
+          groups: result.groups ?? [],
+          hints: result.hints ?? [],
+          bypass: result.bypass ?? null,
+        });
         setStats(s);
       }
     };
@@ -247,6 +254,7 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
     obstacles: sceneState.obstacles,
     groups: sceneState.groups,
     hints: sceneState.hints,
+    bypass: sceneState.bypass,
     stats,
     frameSize,
     error,
