@@ -37,11 +37,18 @@ class MotionEstimator:
         self.history.clear()
         self.last_seen.clear()
 
-    def update(self, track_id: int | None, t: float, distance_m: float, x_m: float, z_m: float) -> Motion:
-        """x_m, z_m — положение объекта на земле относительно пользователя (вбок, вперёд)."""
+    def update(self, track_id: int | None, t: float, distance_m: float, x_m: float, z_m: float,
+               truncated: bool = False) -> Motion:
+        """x_m, z_m — положение объекта на земле относительно пользователя (вбок, вперёд).
+        truncated — рамка обрезана краем кадра: видимая часть меняется (объект уходит за край,
+        когда проходишь мимо), центр и дистанция "прыгают" — скорость по ней не оцениваем."""
         if track_id is None:
             return STILL
         h = self.history.setdefault(track_id, deque())
+        if truncated:
+            h.clear()
+            self.last_seen[track_id] = t
+            return STILL
         # Скачок дистанции — это уже другой объект (смена ближайшего препятствия, ошибка трекера)
         if h and abs(distance_m - h[-1][1]) > self.s.motion_jump_frac * max(h[-1][1], 1.0):
             h.clear()
@@ -123,7 +130,8 @@ class EgoMotion:
                         return self.speed
                     a = self._ground_points(p0.reshape(-1, 2)[ok], plane, focal, w, h)
                     b = self._ground_points(p1.reshape(-1, 2)[ok], plane, focal, w, h)
-                    dz = (a[:, 2] - b[:, 2]) / dt  # точка пола стала ближе -> идём вперёд
+                    _, fwd, _ = plane.axes()  # "вперёд" по земле, а не по оси наклонённой камеры
+                    dz = (a @ fwd - b @ fwd) / dt  # точка пола стала ближе -> идём вперёд
                     dz = dz[np.isfinite(dz)]
                     if len(dz) >= 8:
                         frame_speed = float(np.median(dz))
