@@ -1,6 +1,6 @@
-"""Пространственная разметка: зона, панорама звука, срочность."""
-from .config import Settings
-from .schemas import Urgency, Zone
+"""Положение объекта в кадре: зона по третям кадра и панорама (-1..1).
+Срочность и зоны в метрах считаются в threat.py."""
+from .schemas import Zone
 
 
 def zone_and_pan(box: tuple[int, int, int, int], frame_width: int) -> tuple[Zone, float]:
@@ -13,11 +13,3 @@ def zone_and_pan(box: tuple[int, int, int, int], frame_width: int) -> tuple[Zone
     else:
         zone = "center"
     return zone, round(pan, 2)
-
-
-def urgency(distance_m: float, s: Settings) -> Urgency:
-    if distance_m < s.near_m:
-        return "high"
-    if distance_m < s.mid_m:
-        return "medium"
-    return "low"

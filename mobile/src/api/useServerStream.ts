@@ -1,6 +1,8 @@
 import { RefObject, useEffect, useRef, useState } from "react";
 import { Platform } from "react-native";
 import type { CameraView } from "expo-camera";
+import { cameraTilt, Vec3 } from "../sensors/cameraTilt";
+import { course } from "../sensors/course";
 import { measureLuma, nextTorch } from "./brightness";
 import {
   clearSceneCalibration,
@@ -14,8 +16,12 @@ import {
   ConfigMessage,
   DEFAULT_HFOV,
   encodeFrame,
+  Group,
   HelloMessage,
+  Hint,
+  Bypass,
   Obstacle,
+  PoseMessage,
   PROTOCOL_VERSION,
   ResultMessage,
   Scene,
@@ -63,7 +69,15 @@ const settingsFor = (scene: Scene, hfov?: number): StreamSettings => {
   return { scene, hfov: saved?.hfov ?? hfov ?? DEFAULT_HFOV, depthScale: saved?.depthScale };
 };
 
+export interface SceneState {
+  obstacles: Obstacle[];
+  groups: Group[];
+  hints: Hint[];
+  bypass: Bypass | null;
+}
+
 const EMPTY_STATS: StreamStats = { fps: 0, rttMs: 0, serverMs: 0, frameKb: 0 };
+const EMPTY_SCENE: SceneState = { obstacles: [], groups: [], hints: [], bypass: null };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const ema = (prev: number, next: number) => (prev ? prev * 0.8 + next * 0.2 : next);
 
@@ -74,7 +88,8 @@ const ema = (prev: number, next: number) => (prev ? prev * 0.8 + next * 0.2 : ne
  */
 export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, hfov }: Options) {
   const [status, setStatus] = useState<StreamStatus>("connecting");
-  const [obstacles, setObstacles] = useState<Obstacle[]>([]);
+  // Всё из одного ответа сервера — одним состоянием, чтобы звук и экран видели согласованный кадр
+  const [sceneState, setScene] = useState<SceneState>(EMPTY_SCENE);
   const [stats, setStats] = useState<StreamStats>(EMPTY_STATS);
   const [frameSize, setFrameSize] = useState<FrameSize | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -199,8 +214,8 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
       void measureLuma(photo.base64).then((luma) => {
         if (luma != null) noteLuma(luma);
       });
-      if (Platform.OS === "web" && photo.width) {
-        scale = Math.min(1, maxWidth / photo.width); // width — размер исходного потока
+      if (Platform.OS === "web" && photo.width && photo.height) {
+        scale = Math.min(1, maxWidth / Math.max(photo.width, photo.height));
       }
       if (photo.width && photo.height) {
         // expo-camera web считает камеру без facingMode фронтальной и зеркалит превью
@@ -223,7 +238,7 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
         try {
           base64 = await captureFrame();
         } catch (e) {
-          console.warn("[stream] ошибка захвата кадра", e);
+          console.warn("[stream] frame capture failed", e);
         }
         if (!base64) {
           await sleep(CAMERA_RETRY_MS);
@@ -235,6 +250,17 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
         const frame = encodeFrame(seq, base64);
         const sentAt = Date.now();
         const reply = waitReply(seq);
+        // Ориентация телефона для этого кадра — сервер учтёт наклон и завал вбок
+        const up = cameraTilt.upVector(Date.now());
+        if (up) {
+          const dev = course.deviation(Date.now());
+          const pose: PoseMessage = {
+            type: "pose",
+            up: up.map((v) => Math.round(v * 1000) / 1000) as Vec3,
+            course: dev == null ? null : Math.round(dev),
+          };
+          ws.send(JSON.stringify(pose));
+        }
         ws.send(frame);
         const result = await reply;
         if (!alive) break;
@@ -248,7 +274,12 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
           frameKb: ema(s.frameKb, frame.byteLength / 1024),
         };
         lastLoop = now;
-        setObstacles(result.obstacles);
+        setScene({
+          obstacles: result.obstacles,
+          groups: result.groups ?? [],
+          hints: result.hints ?? [],
+          bypass: result.bypass ?? null,
+        });
         setStats(s);
       }
     };
@@ -316,20 +347,20 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
           setCalibrationOk(true);
           setCalibrationNote("Калибровка сброшена. Снова используется автокалибровка.");
         } else if (msg.type === "error") {
-          console.warn("[stream] сервер:", msg.message);
+          console.warn("[stream] server:", msg.message);
           setError(msg.message);
           resolvePending(null);
         }
       };
 
-      ws.onerror = () => setError(`Нет связи с сервером (${url})`);
+      ws.onerror = () => setError(`No connection to the server (${url})`);
 
       ws.onclose = () => {
         resolvePending(null);
         if (wsRef.current === ws) wsRef.current = null;
         if (!alive) return;
         setStatus("reconnecting");
-        setObstacles([]);
+        setScene(EMPTY_SCENE);
         setTimeout(connect, reconnectDelay);
         reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_MS);
       };
@@ -344,7 +375,7 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
       wsRef.current?.close();
       wsRef.current = null;
       setStatus("connecting"); // к следующему запуску
-      setObstacles([]);
+      setScene(EMPTY_SCENE);
     };
   }, [url, enabled, cameraRef]);
 
@@ -389,7 +420,10 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
 
   return {
     status: enabled ? status : ("stopped" as StreamStatus),
-    obstacles,
+    obstacles: sceneState.obstacles,
+    groups: sceneState.groups,
+    hints: sceneState.hints,
+    bypass: sceneState.bypass,
     stats,
     frameSize,
     error,

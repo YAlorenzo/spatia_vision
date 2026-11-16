@@ -7,14 +7,46 @@ export const DEFAULT_HFOV = 65; // как Settings.camera_hfov_deg на серв
 export type Scene = "outdoor" | "indoor";
 export type Zone = "left" | "center" | "right";
 export type Urgency = "high" | "medium" | "low";
+/** person/vehicle/animal — по детектору; obstacle — по карте глубины, без класса */
+export type Kind = "person" | "vehicle" | "animal" | "obstacle";
+/**
+ * Класс опасности:
+ *   danger — угроза (главная или едет на тебя): звук;
+ *   warn   — сказать голосом (едущая машина, человек идёт к тебе / на пути, живое сбоку);
+ *   info   — показать цветом, молчать (люди/машины ближе 13 м);
+ *   none   — фон, серым (статичное сбоку).
+ */
+export type Alert = "danger" | "warn" | "info" | "none";
+export type GroupType = "crowd" | "parking" | "cluster"; // cluster — много предметов рядом
+export type Hint = "too_dark" | "blurry";
+/** С какой стороны обойти главную опасность; none — прохода в кадре не видно. */
+export type Bypass = "left" | "right" | "none";
+
+/** Обстановка: толпа людей или парковка — одним сообщением вместо каждого объекта. */
+export interface Group {
+  type: GroupType;
+  zones: Zone[]; // center = впереди
+  count: number;
+  distance: number;
+}
 
 export interface Obstacle {
-  id: number | null;
+  id: number | null; // для obstacle: -1/-2/-3 = слева / в коридоре / справа
+  kind: Kind;
   cls: string;
-  zone: Zone;
-  pan: number; // -1 (слева) .. 1 (справа)
+  zone: Zone; // center = коридор движения (в метрах), не средняя треть кадра
+  pan: number; // -1 (левый край кадра) .. 1 (правый)
+  bearing: number; // угол на объект, градусы: < 0 слева, > 0 справа
   distance: number; // метры
   urgency: Urgency;
+  in_path: boolean; // врежешься, если идти прямо
+  approach: number; // относительная скорость сближения, м/с (> 0 — приближается)
+  own_speed: number; // собственная скорость к пользователю (за вычетом его ходьбы), м/с
+  ttc: number | null; // эффективное время до столкновения, с (только для угроз)
+  moving: boolean; // движется сам
+  threat: boolean; // в коридоре или едет на пользователя
+  primary: boolean; // ГЛАВНАЯ опасность — звук только о ней
+  alert: Alert;
   conf: number;
   box: [number, number, number, number]; // x1, y1, x2, y2 в долях кадра
 }
@@ -46,6 +78,18 @@ export interface ClearCalibrationMessage {
   type: "clear_calibration";
 }
 
+/**
+ * Ориентация телефона для следующего кадра: "вверх" (по гравитации) в осях камеры —
+ * x вправо, y вниз по картинке, z вперёд от камеры. Телефон вертикально: [0, -1, 0].
+ * Шлётся перед каждым кадром, если есть датчик ориентации.
+ */
+export interface PoseMessage {
+  type: "pose";
+  up: [number, number, number];
+  /** Курс относительно камеры, градусы (> 0 правее): сервер выбирает сторону обхода ближе к нему. */
+  course?: number | null;
+}
+
 // сервер -> клиент
 export interface ReadyMessage {
   type: "ready";
@@ -58,6 +102,9 @@ export interface ResultMessage {
   type: "result";
   seq: number;
   obstacles: Obstacle[];
+  groups?: Group[];
+  hints?: Hint[];
+  bypass?: Bypass | null;
   server_ms: number;
   dropped: number;
 }

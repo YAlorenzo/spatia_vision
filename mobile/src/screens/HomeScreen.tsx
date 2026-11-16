@@ -11,7 +11,7 @@ export const HomeScreen = ({ onStart }: HomeScreenProps) => {
         SpatiaVision
       </Text>
       <Text className="text-zinc-400 text-lg mb-16 text-center">
-        Пространственный ассистент
+        Spatial audio assistant
       </Text>
 
       <TouchableOpacity
@@ -19,7 +19,7 @@ export const HomeScreen = ({ onStart }: HomeScreenProps) => {
         onPress={onStart}
       >
         <Text className="text-white text-xl font-black uppercase text-center">
-          Начать
+          Start
         </Text>
       </TouchableOpacity>
     </View>

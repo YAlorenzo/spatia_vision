@@ -2,7 +2,7 @@ import { useState } from "react";
 import { LayoutChangeEvent, Text, View } from "react-native";
 import type { Obstacle } from "../api/protocol";
 import type { FrameSize } from "../api/useServerStream";
-import { classLabel, URGENCY_COLOR } from "./labels";
+import { boxColor, boxLevel, classLabel, zoneLetter } from "./labels";
 
 interface Props {
   obstacles: Obstacle[];
@@ -37,22 +37,31 @@ export const ObstacleOverlay = ({ obstacles, frameSize }: Props) => {
           const [x1, x2] = frameSize!.mirrored ? [1 - bx2, 1 - bx1] : [bx1, bx2];
           const fw = frameSize!.width * scale;
           const fh = frameSize!.height * scale;
-          const color = URGENCY_COLOR[o.urgency];
+          // Фон (статичное сбоку) — серый и полупрозрачный; люди/машины рядом — всегда цветом;
+          // главная опасность — толстая рамка
+          const color = boxColor(o);
+          const level = boxLevel(o);
+          const idle = level === "idle"; // видим, но не угрожает — тускло, без заливки
           return (
             <View
-              key={o.id ?? `i${i}`}
-              className="absolute rounded-lg border-2"
+              key={`${o.kind}:${o.id ?? i}`}
+              className="absolute rounded-lg"
               style={{
                 left: offsetX + x1 * fw,
                 top: offsetY + y1 * fh,
                 width: (x2 - x1) * fw,
                 height: (y2 - y1) * fh,
                 borderColor: color,
+                borderWidth: o.primary ? 4 : idle ? 1 : 2,
+                opacity: idle ? 0.35 : 1,
+                // препятствия по глубине (без класса) — пунктиром и с заливкой
+                borderStyle: o.kind === "obstacle" ? "dashed" : "solid",
+                backgroundColor: o.kind === "obstacle" && !idle ? `${color}22` : "transparent",
               }}
             >
               <View className="absolute -top-6 left-0 rounded px-1.5 py-0.5" style={{ backgroundColor: color }}>
-                <Text className="text-xs font-bold text-black" numberOfLines={1}>
-                  {classLabel(o.cls)} {o.distance.toFixed(1)} м
+                <Text className={idle ? "text-[10px] text-black" : "text-xs font-bold text-black"} numberOfLines={1}>
+                  {zoneLetter(o)} · {classLabel(o.cls)} {o.distance.toFixed(1)} m{o.moving ? " · moving" : ""}
                 </Text>
               </View>
             </View>

@@ -9,12 +9,33 @@
          следующий кадр: центр кадра считается находящимся на distance_m, масштаб фиксируется.
   text   {"type":"clear_calibration"}
          сброс ручного масштаба и угла обзора к значениям по умолчанию.
+  text   {"type":"pose", "up":[0.05, -0.97, -0.24]}
+         (необязательно) ориентация телефона для следующего кадра: "вверх" в осях камеры.
+         Без неё наклон телефона оценивается по полу — медленнее и не всегда.
   binary [uint32 big-endian seq][JPEG]
          кадр. Клиент шлёт следующий кадр только после ответа на предыдущий.
 
 Сервер -> клиент
   text   {"type":"ready", "v":1, "session":"…", "max_width":640}
-  text   {"type":"result", "seq":42, "obstacles":[…], "server_ms":65.3, "dropped":0}
+  text   {"type":"result", "seq":42, "obstacles":[…], "groups":[…], "hints":[…],
+          "server_ms":65.3, "dropped":0}
+         obstacle: {"id":6, "kind":"person|vehicle|animal|obstacle", "cls":"person",
+                    "zone":"left|center|right", "pan":-0.4, "bearing":-12.5, "distance":3.2,
+                    "in_path":true, "approach":1.1, "own_speed":0.1, "ttc":2.9,
+                    "moving":false, "threat":true, "primary":true,
+                    "alert":"danger|warn|info|none",
+                    "urgency":"high|medium|low", "conf":0.8, "box":[x1,y1,x2,y2]}
+         alert: danger — угроза (звук); warn — сказать голосом; info — показать; none — фон.
+         group: {"type":"crowd|parking|cluster", "zones":["left","center"], "count":5, "distance":4.2}
+         hints: ["too_dark", "blurry"]
+         bypass: "left" | "right" — с этой стороны главную опасность можно обойти;
+                 "none" — прохода в кадре не видно; null — обходить нечего
+         cls у kind=obstacle: предмет по детектору (bench, chair, fire hydrant...), иначе по форме:
+                 wall (стена) / pole (столб или дерево) / low (низкое), иначе obstacle
+         Список отсортирован: сначала primary (главная опасность), потом угрозы, потом остальное.
+         zone=center — коридор движения (в метрах), а не средняя треть кадра.
+         kind=obstacle — найдено по карте глубины без класса (дерево, столб, стена...),
+         id -1/-2/-3 = ближайшее препятствие слева / в коридоре / справа.
   text   {"type":"calibrated", "ok":true, "distance_m":2, "depth_scale":1.12, "hfov":68, "center_m":1.8, "message":"…"}
   text   {"type":"calibration_cleared"}
   text   {"type":"error", "message":"…"}
@@ -25,7 +46,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from .config import Scene
-from .schemas import Obstacle
+from .schemas import Bypass, Group, Hint, Obstacle
 
 PROTOCOL_VERSION = 1
 FRAME_HEADER = struct.Struct(">I")  # seq: uint32 big-endian
@@ -37,7 +58,7 @@ class Hello(BaseModel):
     v: int = PROTOCOL_VERSION
     platform: str = "unknown"
     scene: Scene | None = None
-    hfov: float | None = Field(default=None, gt=20, lt=150)
+    hfov: float | None = Field(default=None, gt=20, lt=150)  # угол обзора по ДЛИННОЙ стороне кадра
     depth_scale: float | None = Field(default=None, ge=0.25, le=4.0)
 
 
@@ -58,6 +79,17 @@ class ClearCalibration(BaseModel):
     type: Literal["clear_calibration"]
 
 
+class Pose(BaseModel):
+    """Ориентация телефона для СЛЕДУЮЩЕГО кадра: направление "вверх" (по гравитации)
+    в координатах камеры — X вправо, Y вниз по картинке, Z вперёд от камеры.
+    Телефон вертикально: [0, -1, 0]; наклонён к полу на 30°: [0, -0.87, -0.5]."""
+    type: Literal["pose"]
+    up: tuple[float, float, float]
+    # Курс: куда человеку нужно относительно оси камеры, градусы (> 0 правее); None — курс не задан.
+    # Сторона обхода выбирается ближе к курсу.
+    course: float | None = Field(default=None, ge=-180, le=180)
+
+
 class Ready(BaseModel):
     type: Literal["ready"] = "ready"
     v: int = PROTOCOL_VERSION
@@ -69,6 +101,9 @@ class Result(BaseModel):
     type: Literal["result"] = "result"
     seq: int
     obstacles: list[Obstacle]
+    groups: list[Group] = []  # толпа / парковка
+    hints: list[Hint] = []  # подсказки по кадру: too_dark, blurry
+    bypass: Bypass | None = None  # с какой стороны обойти главную опасность (none — прохода не видно)
     server_ms: float
     dropped: int  # сколько кадров сервер выбросил как устаревшие (за сессию)
 

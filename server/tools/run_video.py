@@ -36,11 +36,18 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--video", default=str(SERVER_DIR / "test_video.mp4"))
     p.add_argument("--indoor", action="store_true", help="Depth Anything Indoor (до 20 м)")
-    p.add_argument("--hfov", type=float, default=None, help="Горизонтальный FOV камеры, град.")
+    p.add_argument("--hfov", type=float, default=None, help="Угол обзора камеры по длинной стороне кадра, град.")
+    p.add_argument("--cam-height", type=float, default=None,
+                   help="Высота камеры над землёй, м (по умолчанию 1.35 — телефон в руке); 0 — не калибровать по полу")
     p.add_argument("--max-frames", type=int, default=0)
+    p.add_argument("--width", type=int, default=640, help="Ужимать длинную сторону кадра до этого (как телефон), 0 — не ужимать")
     p.add_argument("--name", default=None, help="Имя папки в output/")
     p.add_argument("--show", action="store_true")
     p.add_argument("--no-video", action="store_true", help="Не писать annotated.mp4")
+    p.add_argument("--step", type=int, default=1,
+                   help="Обрабатывать каждый N-й кадр (60 к/с видео с --step 4 ≈ 15 к/с, как вживую)")
+    p.add_argument("--dump", action="store_true",
+                   help="Писать ответы сервера по кадрам в frames.jsonl (для проверки звука/голоса)")
     p.add_argument("--live", action="store_true",
                    help="Реальное время: окно + пропуск кадров, которые не успели обработать "
                         "(как с настоящей камерой). Файл не пишется.")
@@ -55,31 +62,108 @@ def depth_panel(depth_map: np.ndarray) -> np.ndarray:
     return vis
 
 
+def _tint(img: np.ndarray, grid_mask: np.ndarray | None, color: tuple[int, int, int], alpha: float) -> None:
+    """Подкрашивает пиксели, попавшие в маску на сетке анализа глубины."""
+    if grid_mask is None or not grid_mask.any():
+        return
+    h, w = img.shape[:2]
+    m = cv2.resize(grid_mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+    img[m] = (img[m] * (1 - alpha) + np.array(color) * alpha).astype(np.uint8)
+
+
+def _text(img: np.ndarray, text: str, org: tuple[int, int], color, scale: float = 0.5) -> None:
+    cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), 4)
+    cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, color, 1)
+
+
 def annotate(frame: np.ndarray, dbg: FrameDebug, label: str) -> np.ndarray:
     out = frame.copy()
     h, w = out.shape[:2]
+    fs = dbg.free_space
+    if fs is not None:
+        _tint(out, fs.ground, (80, 200, 80), 0.25)  # пол — зелёный
+        _tint(out, fs.obstacles, (200, 60, 200), 0.45)  # препятствия по глубине — фиолетовый
     for x in (w // 3, 2 * w // 3):
         cv2.line(out, (x, 0), (x, h), (255, 255, 255), 1)
-    for o in dbg.objects:
+    for o in sorted(dbg.objects, key=lambda o: o.primary):  # главную рисуем последней, поверх
         x1, y1, x2, y2 = o.detection.box
-        color = URGENCY_COLORS[o.urgency]
-        cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
+        # danger — по срочности, warn (голосом) — оранжевый, info — голубой, фон — серый
+        color = (URGENCY_COLORS[o.urgency] if o.alert == "danger" else
+                 (0, 140, 255) if o.alert == "warn" else
+                 (250, 190, 60) if o.alert == "info" else (150, 150, 150))
+        cv2.rectangle(out, (x1, y1), (x2, y2), color, 2 if o.kind != "obstacle" else 3)
+        if o.primary:
+            cv2.rectangle(out, (x1 - 3, y1 - 3), (x2 + 3, y2 + 3), (255, 255, 255), 2)
+            _text(out, "PRIMARY", (x1, min(h - 30, y2 + 16)), (255, 255, 255))
         d = o.distance
-        tid = "" if o.detection.track_id is None else f"#{o.detection.track_id} "
+        tid = "" if o.detection.track_id is None or o.detection.track_id < 0 else f"#{o.detection.track_id} "
         main = f"{tid}{o.detection.cls} {d.smoothed_m:.1f}m {o.zone}"
+        if o.in_path:
+            main += " PATH"
+        if o.ttc_s is not None:
+            main += f" ttc {o.ttc_s:.1f}s"
+        if o.moving:
+            main += f" MOVING {o.own_speed_mps:.1f}m/s"
         sub = f"d={d.depth_m:.1f}" if d.depth_m is not None else "d=-"
         sub += f" g={d.geometry_m:.1f}" if d.geometry_m is not None else " g=-"
         ty = max(18, y1 - 24)
-        for i, text in enumerate((main, sub)):
-            org = (x1, ty + i * 18)
-            cv2.putText(out, text, org, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 4)
-            cv2.putText(out, text, org, cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+        _text(out, main, (x1, ty), color)
+        _text(out, sub, (x1, ty + 18), color)
     t = dbg.timings_ms
-    hud = (f"{label} | scale x{dbg.depth_scale:.2f} | det {t['detect']:.0f}ms "
-           f"depth {t['depth']:.0f}ms total {t['total']:.0f}ms")
-    cv2.putText(out, hud, (10, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 4)
-    cv2.putText(out, hud, (10, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+    hud = (f"{label} | scale x{dbg.depth_scale:.2f} | det {t['detect']:.0f} depth {t['depth']:.0f} "
+           f"free {t.get('free', 0):.0f} total {t['total']:.0f}ms")
+    if fs is not None and fs.plane is not None:
+        hud += f" | cam {fs.plane.height:.2f}m pitch {fs.plane.pitch_deg:.0f}deg"
+        if not fs.plane.measured:
+            hud += " (prior)"
+    hud += f" | me {dbg.ego_speed:+.1f}m/s"
+    _text(out, hud, (10, h - 12), (255, 255, 255), 0.55)
+    if dbg.bypass:
+        _text(out, f"BYPASS {dbg.bypass.upper()}", (10, 46), (0, 255, 120), 0.7)
+    flags = [f"{g.type.upper()} {'/'.join(g.zones)} x{g.count}" for g in dbg.groups] + [x.upper() for x in dbg.hints]
+    if flags:
+        _text(out, " | ".join(flags), (10, 22), (0, 220, 255), 0.7)
     return out
+
+
+class Recording:
+    """Запись сессии с телефона (SPATIA_RECORD=1): папка с JPEG и frames.jsonl (время, наклон).
+    Интерфейс как у cv2.VideoCapture — чтобы проигрывать тем же циклом."""
+
+    def __init__(self, path: Path):
+        self.dir = path
+        f = path / "frames.jsonl"
+        self.items = [json.loads(line) for line in f.read_text(encoding="utf-8").splitlines()] if f.exists() else []
+        self.pos = 0
+        self.t = 0.0
+        self.up = None
+
+    def isOpened(self) -> bool:
+        return bool(self.items)
+
+    def get(self, prop: int) -> float:
+        if prop == cv2.CAP_PROP_FRAME_COUNT:
+            return len(self.items)
+        if prop == cv2.CAP_PROP_FPS and len(self.items) > 1:
+            return (len(self.items) - 1) / max(self.items[-1]["t"] - self.items[0]["t"], 1e-3)
+        return 0.0
+
+    def grab(self) -> bool:
+        self.pos += 1
+        return self.pos <= len(self.items)
+
+    def read(self):
+        if self.pos >= len(self.items):
+            return False, None
+        it = self.items[self.pos]
+        self.pos += 1
+        self.t = it["t"]
+        self.up = None if it.get("up") is None else np.array(it["up"], dtype=np.float64)
+        frame = cv2.imread(str(self.dir / it["file"]))
+        return frame is not None, frame
+
+    def release(self) -> None:
+        pass
 
 
 def jitter_pct(values: list[float]) -> float | None:
@@ -96,7 +180,9 @@ def main() -> None:
     if args.indoor:
         settings.depth_model_id = DEPTH_MODELS["indoor"]
     if args.hfov:
-        settings.camera_hfov_deg = args.hfov
+        settings.camera_fov_deg = args.hfov
+    if args.cam_height is not None:
+        settings.camera_height_m = args.cam_height
 
     name = args.name or Path(args.video).stem
     out_dir = SERVER_DIR / "output" / name
@@ -108,7 +194,8 @@ def main() -> None:
     session = Engine(settings).new_session()
     label = session.depth.name
     is_webcam = args.video.isdigit()  # --video 0 = веб-камера ноутбука
-    cap = cv2.VideoCapture(int(args.video) if is_webcam else args.video)
+    rec = Recording(Path(args.video)) if Path(args.video).is_dir() else None  # запись сессии с телефона
+    cap = rec or cv2.VideoCapture(int(args.video) if is_webcam else args.video)
     if not cap.isOpened():
         sys.exit(f"Не удалось открыть видео: {args.video}")
     fps_in = cap.get(cv2.CAP_PROP_FPS) or 30
@@ -124,17 +211,34 @@ def main() -> None:
     scales: list[float] = []
     per_track: dict[int, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
 
+    dump = open(out_dir / "frames.jsonl", "w", encoding="utf-8") if args.dump else None
     i = 0
     while True:
         if skip_frames:
             target = int((time.perf_counter() - t_start) * fps_in)
             while src_pos < target and cap.grab():
                 src_pos += 1
+        for _ in range(args.step - 1):  # пропуск кадров: --step
+            if cap.grab():
+                src_pos += 1
         ok, frame = cap.read()
         src_pos += 1
         if not ok or (args.max_frames and i >= args.max_frames):
             break
-        obstacles, dbg = session.process(frame)
+        if args.width and max(frame.shape[:2]) > args.width:  # как телефон: длинная сторона ~640px
+            k = args.width / max(frame.shape[:2])
+            frame = cv2.resize(frame, (round(frame.shape[1] * k), round(frame.shape[0] * k)), interpolation=cv2.INTER_AREA)
+        t_video = rec.t if rec else time.perf_counter() - t_start if is_webcam else src_pos / fps_in
+        obstacles, dbg = session.process(frame, timestamp=None if is_webcam else t_video, up=rec.up if rec else None)
+        if dump is not None:
+            dump.write(json.dumps({
+                "t": round(t_video, 3),
+                "obstacles": [o.model_dump() for o in obstacles],
+                "groups": [g.model_dump() for g in dbg.groups],
+                "hints": list(dbg.hints),
+                "bypass": dbg.bypass,
+                "lanes": dbg.lanes,
+            }, ensure_ascii=False) + "\n")
         if i >= 5:  # первые кадры — прогрев CUDA
             timings.append(dbg.timings_ms["total"])
         scales.append(dbg.depth_scale)
@@ -153,6 +257,18 @@ def main() -> None:
                 "fused_m": round(d.fused_m, 3),
                 "smoothed_m": round(d.smoothed_m, 3),
                 "urgency": o.urgency,
+                "kind": o.kind,
+                "approach_mps": o.approach_mps,
+                "ttc_s": o.ttc_s,
+                "moving": o.moving,
+                "in_path": o.in_path,
+                "own_speed_mps": o.own_speed_mps,
+                "threat": o.threat,
+                "primary": o.primary,
+                "alert": o.alert,
+                "lateral_mps": o.lateral_speed_mps,
+                "groups": ";".join(f"{g.type}:{'/'.join(g.zones)}" for g in dbg.groups),
+                "ego_mps": round(dbg.ego_speed, 2),
             })
             if o.detection.track_id is not None:
                 tr = per_track[o.detection.track_id]
@@ -178,6 +294,8 @@ def main() -> None:
         i += 1
 
     cap.release()
+    if dump is not None:
+        dump.close()
     if writer is not None:
         writer.release()
     cv2.destroyAllWindows()
@@ -214,7 +332,7 @@ def main() -> None:
         "frames": i,
         "ms_per_frame": round(statistics.mean(timings), 1) if timings else None,
         "fps": round(1000 / statistics.mean(timings), 1) if timings else None,
-        "hfov_deg": settings.camera_hfov_deg,
+        "fov_deg": settings.camera_fov_deg,
         "depth_scale_final": round(scales[-1], 3) if scales else None,
         "tracks_10plus_frames": len(tracks),
         "median_jitter_raw_pct": med("jitter_raw_pct"),
