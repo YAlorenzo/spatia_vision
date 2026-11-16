@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Bypass, Group, Hint, Obstacle } from "../api/protocol";
 import { cameraTilt, TiltAdvice } from "../sensors/cameraTilt";
+import { course } from "../sensors/course";
 import { announcer } from "./announcer";
 import { haptics } from "./haptics";
 import { spatialAudio } from "./spatialAudio";
@@ -58,6 +59,7 @@ export function useAudioFeedback({ obstacles, groups, hints, bypass, active, bee
       calm: spatialAudio.calm,
       verbose,
       heading: cameraTilt.heading(now),
+      course: course.deviation(now),
     });
     // Осмотр (человек поворачивает телефон): сигнал тихий, вибрации нет
     spatialAudio.scan = announcer.scanning;

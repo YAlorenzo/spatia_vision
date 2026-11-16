@@ -7,6 +7,10 @@ import { getServerUrl } from "../api/serverUrl";
 import { StreamStatus, useServerStream } from "../api/useServerStream";
 import { ObstacleOverlay } from "../components/ObstacleOverlay";
 import { useAudioFeedback, useConnectionWatchdog, useTiltAdvice } from "../audio/useAudioFeedback";
+import { announcer } from "../audio/announcer";
+import { spatialAudio } from "../audio/spatialAudio";
+import { course, courseRu } from "../sensors/course";
+import { listenOnce, parseCommand, voiceSupported } from "../sensors/voiceCommands";
 import { describe, setLabelScene, URGENCY_COLOR, zonesRu } from "../components/labels";
 
 // CameraView — сторонний компонент, NativeWind должен знать, что className -> style
@@ -56,10 +60,83 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
   const connectionLost = useConnectionWatchdog(obstacles, speech);
 
   const primary = obstacles.find((o) => o.primary);
+
+  // --- Курс: направление, куда человек хочет идти ---
+  const [courseDev, setCourseDev] = useState<number | null>(null);
+  useEffect(() => {
+    const id = setInterval(() => setCourseDev(course.deviation(Date.now())), 400);
+    return () => clearInterval(id);
+  }, []);
+  useEffect(() => () => course.clear(), []);
+  const setCourse = () => {
+    announcer.sayNow(
+      course.set(Date.now())
+        ? "Курс запомнен. Иду в эту сторону"
+        : "Курс недоступен: нет датчика поворота телефона",
+    );
+  };
+  const clearCourse = () => {
+    course.clear();
+    announcer.sayNow("Курс сброшен");
+  };
+  const whereCourse = () => {
+    const dev = course.deviation(Date.now());
+    announcer.sayNow(dev == null ? "Курс не задан" : Math.abs(dev) < 12 ? "Вы на курсе" : courseRu(dev));
+  };
+
+  // --- Голосовые команды (по нажатию кнопки, одна фраза) ---
+  const [listening, setListening] = useState(false);
+  const stateRef = useRef({ primary, bypass });
+  useEffect(() => {
+    stateRef.current = { primary, bypass };
+  }, [primary, bypass]);
+  const listen = () => {
+    if (listening) return;
+    if (!voiceSupported()) {
+      announcer.sayNow("Голосовые команды в этом браузере не работают");
+      return;
+    }
+    window.speechSynthesis?.cancel();
+    spatialAudio.duck(true); // чтобы микрофон не ловил сигналы
+    setListening(true);
+    listenOnce((text, err) => {
+      setListening(false);
+      spatialAudio.duck(false);
+      const cmd = text ? parseCommand(text) : null;
+      if (!cmd) {
+        announcer.sayNow(
+          err === "not-allowed"
+            ? "Нет доступа к микрофону"
+            : "Не понял. Команды: курс, сброс курса, куда, что впереди, подробно, кратко, повтори",
+        );
+        return;
+      }
+      if (cmd === "course") setCourse();
+      else if (cmd === "clear_course") clearCourse();
+      else if (cmd === "where") whereCourse();
+      else if (cmd === "repeat") announcer.repeat();
+      else if (cmd === "verbose") {
+        setVerbose(true);
+        announcer.sayNow("Говорю подробно");
+      } else if (cmd === "brief") {
+        setVerbose(false);
+        announcer.sayNow("Говорю кратко");
+      } else if (cmd === "ahead") {
+        const st = stateRef.current;
+        const side = st.bypass === "left" ? ". Обход слева" : st.bypass === "right" ? ". Обход справа" : "";
+        announcer.sayNow(st.primary ? describe(st.primary) + side : "Впереди свободно");
+      }
+    });
+  };
   const otherThreats = obstacles.filter((o) => o.threat && !o.primary).length;
   const notices = [
     ...(connectionLost ? ["Нет связи — остановитесь"] : []),
-    ...(bypass === "left" ? ["Обход слева"] : bypass === "right" ? ["Обход справа"] : bypass === "none" ? ["Прохода не видно"] : []),
+    ...(listening ? ["Слушаю команду…"] : []),
+    ...(courseDev != null ? [Math.abs(courseDev) < 12 ? "На курсе" : `${courseRu(courseDev)} (${Math.abs(Math.round(courseDev))}°)`] : []),
+    // Совет обхода показываем там же, где голос его говорит: препятствие на пути ближе 4 м
+    ...(primary && primary.in_path && primary.distance <= 4
+      ? bypass === "left" ? ["Обход слева"] : bypass === "right" ? ["Обход справа"] : bypass === "none" ? ["Прохода не видно"] : []
+      : []),
     ...(hints.includes("too_dark") ? ["Темно — остановитесь"] : []),
     ...(hints.includes("blurry") ? ["Размыто — остановитесь"] : []),
     ...groups.map((g) =>
@@ -148,6 +225,27 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
 
       {/* Главная опасность + стоп */}
       <View className="absolute bottom-10 w-full items-center gap-4 px-6">
+        {/* Курс и голосовая команда — большие кнопки, чтобы попасть не глядя */}
+        <View className="w-full flex-row gap-3">
+          <TouchableOpacity
+            className={`flex-1 rounded-3xl py-4 items-center ${courseDev != null ? "bg-emerald-600" : "bg-blue-600"}`}
+            onPress={setCourse}
+            onLongPress={clearCourse}
+            accessibilityRole="button"
+            accessibilityLabel="Запомнить курс: иду туда, куда направлен телефон. Долгое нажатие — сбросить курс"
+          >
+            <Text className="text-white text-lg font-black">{courseDev != null ? "Курс задан" : "Задать курс"}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            className={`flex-1 rounded-3xl py-4 items-center ${listening ? "bg-amber-500" : "bg-zinc-700"}`}
+            onPress={listen}
+            accessibilityRole="button"
+            accessibilityLabel="Голосовая команда"
+          >
+            <Text className="text-white text-lg font-black">{listening ? "Слушаю…" : "Команда"}</Text>
+          </TouchableOpacity>
+        </View>
+
         <View
           className="w-full rounded-3xl bg-black/70 px-5 py-4"
           accessibilityLiveRegion="polite"

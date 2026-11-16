@@ -2,6 +2,7 @@ import { RefObject, useEffect, useRef, useState } from "react";
 import { Platform } from "react-native";
 import type { CameraView } from "expo-camera";
 import { cameraTilt, Vec3 } from "../sensors/cameraTilt";
+import { course } from "../sensors/course";
 import {
   ConfigMessage,
   encodeFrame,
@@ -164,7 +165,12 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
         // Ориентация телефона для этого кадра — сервер учтёт наклон и завал вбок
         const up = cameraTilt.upVector(Date.now());
         if (up) {
-          const pose: PoseMessage = { type: "pose", up: up.map((v) => Math.round(v * 1000) / 1000) as Vec3 };
+          const dev = course.deviation(Date.now());
+          const pose: PoseMessage = {
+            type: "pose",
+            up: up.map((v) => Math.round(v * 1000) / 1000) as Vec3,
+            course: dev == null ? null : Math.round(dev),
+          };
           ws.send(JSON.stringify(pose));
         }
         ws.send(frame);

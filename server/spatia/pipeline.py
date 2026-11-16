@@ -70,6 +70,8 @@ class Session:
         self.context = SceneContext(self.s)
         self.bypass = BypassAdvisor(self.s)
         self._held: tuple[GenericObstacle, float] | None = None  # последнее подтверждённое препятствие на пути
+        # Куда человеку нужно относительно оси камеры (присылает клиент, если задан курс), градусы, > 0 правее
+        self.course_deg: float | None = None
         self._floor_raw: float | None = None  # высота камеры над полом в единицах модели глубины (прошлый кадр)
         self._names: dict[str, deque[str]] = {}  # последние названия препятствия по зонам
         self.frame_idx = 0
@@ -235,7 +237,7 @@ class Session:
         lane_state: list[str] = []
         if primary is not None and free_dbg is not None:
             offsets, lane_state = lanes(free_dbg.points, free_dbg.ground_points, objects, primary, focal, self.s)
-        bypass = self.bypass.update(primary, offsets, lane_state)
+        bypass = self.bypass.update(primary, offsets, lane_state, self.course_deg)
         objects.sort(key=lambda o: (not o.primary, not o.threat, o.distance.smoothed_m))
         t4 = time.perf_counter()
 

@@ -2,6 +2,7 @@ import { Platform } from "react-native";
 import type { Bypass, Group, Hint, Obstacle } from "../api/protocol";
 import type { TiltAdvice } from "../sensors/cameraTilt";
 import { classLabel, groupRu, metersRu, warnReason, warnRu, whereRu } from "../components/labels";
+import { courseRu } from "../sensors/course";
 
 /**
  * Голосовые подсказки — по приоритету, одна фраза за раз.
@@ -58,6 +59,14 @@ const INTERRUPT_M = 3; // новая главная опасность ближ�
 const COMING_BANDS_M = [6, 3]; // подробно: приближающийся человек — "Человек, 5 метров"
 const GUIDE_REPEAT_MS = 10000; // стоишь перед препятствием — совет обхода повторяется
 const GUIDE_CHANGE_MS = 2500; // совет изменился
+const GUIDE_SIDE_MS = 3000; // сторона обхода на ходу — не чаще
+const GUIDE_FLIP_MS = 8000; // смена стороны для того же препятствия — не чаще
+// Курс
+const COURSE_OFF_DEG = 25; // отклонился от курса больше — подсказать
+const COURSE_ON_DEG = 12; // вернулся — "на курсе"
+const COURSE_HOLD_MS = 2500; // отклонение держится столько (не оглянулся на секунду)
+const COURSE_REPEAT_MS = 8000;
+const COURSE_BUSY_M = 3; // препятствие на пути ближе — сначала обход, потом курс
 const FREE_AFTER_MS = 800; // препятствия нет столько — "путь свободен"
 const FREE_STALE_MS = 5000;
 // Режим осмотра
@@ -84,6 +93,7 @@ export interface AnnouncerInput {
   calm?: boolean; // человек стоит перед препятствием
   verbose?: boolean; // режим "Подробно"
   heading?: number | null; // куда смотрит камера, градусы по часовой (ноль произвольный); null — нет датчика
+  course?: number | null; // куда курс относительно камеры, градусы (> 0 правее); null — курс не задан
 }
 
 // У препятствий по глубине id — это зона (-1/-2/-3), поэтому в ключ входит и название:
@@ -120,13 +130,21 @@ export class AnnouncerLogic {
   private tiltAt = -Infinity;
   private tiltBadAt = 0; // когда наклон последний раз был плохим
   private comingBand = new Map<string, number>();
-  private guide: { bypass: Bypass | null; at: number } = { bypass: null, at: -Infinity };
+  // последний совет обхода: какая сторона, когда и для какого препятствия
+  private guide: { bypass: Bypass | null; at: number; key?: string } = { bypass: null, at: -Infinity };
+  private courseOffSince: number | null = null;
+  private courseSaidAt = -Infinity;
+  private courseWasOff = false;
   private bypassSaid = new Set<string>(); // препятствия, для которых совет обхода уже звучал
   private guided = false; // говорили о препятствии на пути — когда уйдёт, скажем "путь свободен"
   private lastPrimaryAt = 0;
   private scan: Scan | null = null;
   private primaryPhraseAt = -Infinity; // когда последний раз объявляли препятствие на пути
   lastEndAt = 0; // когда закончилась последняя фраза (для паузы)
+
+  get lastPhrase() {
+    return this.lastText.text;
+  }
 
   /** Идёт осмотр (человек стоит и поворачивает телефон) — сигнал в это время тихий. */
   get scanning() {
@@ -211,7 +229,7 @@ export class AnnouncerLogic {
           const hasSide = p.in_path && (bypass === "left" || bypass === "right");
           const side = hasSide ? `. Обход ${sideRu(bypass!)}` : "";
           if (hasSide) this.bypassSaid.add(k);
-          this.guide = { bypass: hasSide ? bypass : null, at: now };
+          this.guide = { bypass: hasSide ? bypass : null, at: now, key: k };
           return this.say(`${classLabel(p.cls)} ${whereRu(p)}, ${metersRu(p.distance)}${side}`, false, now, urgent, true);
         }
       } else if (verbose && quiet && k === this.primaryKey) {
@@ -242,14 +260,21 @@ export class AnnouncerLogic {
       );
     }
 
-    const announced = p != null && keyOf(p) === this.primaryKey; // об этом препятствии уже сказали
-    // Для озвученного препятствия проход появился позже — сказать (кратко: один раз на препятствие)
-    if (p && announced && p.in_path && !p.moving && (bypass === "left" || bypass === "right")
-        && bypass !== this.guide.bypass && now - this.guide.at > GUIDE_CHANGE_MS
-        && (verbose || !this.bypassSaid.has(keyOf(p)))) {
-      this.guide = { bypass, at: now };
-      this.bypassSaid.add(keyOf(p));
-      return this.say(`${classLabel(p.cls)}, обход ${sideRu(bypass)}`, false, now, false, true);
+    // Совет обхода: то, что показано на экране, должно прозвучать. Для препятствия на пути ближе
+    // 4 м говорим сторону, если для него ещё не говорили или сторона сменилась (не чаще раза в 3 с;
+    // сторону сглаживает сервер). Фраза называет препятствие — отдельно его объявлять уже не нужно.
+    if (p && p.in_path && !p.moving && p.distance <= ANNOUNCE_M && (bypass === "left" || bypass === "right")) {
+      const k = keyOf(p);
+      const fresh = this.guide.key !== k || this.guide.bypass !== bypass;
+      // Для того же препятствия сторону меняем редко: "справа… слева… справа" только сбивает
+      const wait = this.guide.key === k ? GUIDE_FLIP_MS : GUIDE_SIDE_MS;
+      if (fresh && now - this.guide.at > wait) {
+        this.guide = { bypass, at: now, key: k };
+        this.primaryKey = k;
+        this.primaryPhraseAt = now;
+        this.guided = true;
+        return this.say(`${classLabel(p.cls)}, обход ${sideRu(bypass)}`, false, now, false, true);
+      }
     }
 
     // Стоит перед препятствием — совет, как обойти (сигнал в это время редкий и тихий)
@@ -257,7 +282,7 @@ export class AnnouncerLogic {
       const b: Bypass = bypass ?? "none";
       const wait = b !== this.guide.bypass ? GUIDE_CHANGE_MS : GUIDE_REPEAT_MS;
       if (now - this.guide.at > wait) {
-        this.guide = { bypass: b, at: now };
+        this.guide = { bypass: b, at: now, key: keyOf(p) };
         this.guided = true;
         // Совет уже назвал препятствие — отдельно его не объявлять
         this.primaryKey = keyOf(p);
@@ -273,6 +298,29 @@ export class AnnouncerLogic {
       this.guided = false;
       // давно ушло (голос был занят) — уже не новость; кратко — не говорим вовсе: сигнал и так замолчал
       if (verbose && now - this.lastPrimaryAt < FREE_STALE_MS) return this.say("Путь свободен", false, now);
+    }
+
+    // Курс: обошёл препятствие и ушёл в сторону — вернуть. Пока препятствие на пути рядом, молчим:
+    // сначала обход (он и так выбирается в сторону курса), потом курс.
+    const dev = input.course ?? null;
+    if (dev == null) {
+      this.courseOffSince = null;
+      this.courseWasOff = false;
+    } else if (Math.abs(dev) > COURSE_OFF_DEG) {
+      this.courseOffSince ??= now;
+      const busy = p != null && p.in_path && p.distance <= COURSE_BUSY_M;
+      if (!busy && now - this.courseOffSince > COURSE_HOLD_MS && now - this.courseSaidAt > COURSE_REPEAT_MS) {
+        this.courseSaidAt = now;
+        this.courseWasOff = true;
+        return this.say(courseRu(dev), false, now);
+      }
+    } else {
+      this.courseOffSince = null;
+      if (this.courseWasOff && Math.abs(dev) < COURSE_ON_DEG) {
+        this.courseWasOff = false;
+        this.courseSaidAt = now;
+        return this.say("На курсе", false, now);
+      }
     }
 
     // Дальше — второстепенное. Кратко: не чаще одной такой фразы в 3 с.
@@ -479,6 +527,12 @@ class Announcer {
       this.onSpeakingChange?.(false);
     };
     synth.speak(utt);
+  }
+
+  /** Повторить последнюю фразу (голосовая команда "повтори"). */
+  repeat() {
+    const t = this.logic.lastPhrase;
+    this.sayNow(t || "Пока ничего не говорил");
   }
 
   /** Сказать сразу, мимо логики выбора (например, "нет связи" — ответов сервера нет вовсе). */

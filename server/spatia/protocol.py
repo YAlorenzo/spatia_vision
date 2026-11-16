@@ -67,6 +67,9 @@ class Pose(BaseModel):
     Телефон вертикально: [0, -1, 0]; наклонён к полу на 30°: [0, -0.87, -0.5]."""
     type: Literal["pose"]
     up: tuple[float, float, float]
+    # Курс: куда человеку нужно относительно оси камеры, градусы (> 0 правее); None — курс не задан.
+    # Сторона обхода выбирается ближе к курсу.
+    course: float | None = Field(default=None, ge=-180, le=180)
 
 
 class Ready(BaseModel):

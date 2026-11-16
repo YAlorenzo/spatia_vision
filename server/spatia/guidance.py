@@ -66,7 +66,9 @@ class BypassAdvisor:
     def reset(self) -> None:
         self.recent.clear()
 
-    def update(self, primary: TrackedObject | None, offsets: list[float], state: list[str]) -> Bypass | None:
+    def update(self, primary: TrackedObject | None, offsets: list[float], state: list[str],
+               course_deg: float | None = None) -> Bypass | None:
+        """course_deg — куда человеку нужно (градусы от оси камеры, > 0 правее); None — курс не задан."""
         if primary is None or not primary.in_path or primary.moving:
             self.recent.clear()
             self.side = None
@@ -79,6 +81,13 @@ class BypassAdvisor:
             same = [x for x in free if (x > 0) == (self.side == "right")]
             if same and min(abs(x) for x in same) <= abs(best) + self.s.bypass_keep_side_m:
                 side = self.side
+        # Задан курс — обходим с той стороны, куда человеку и так нужно (если она не намного хуже):
+        # иначе обход уводит в сторону от цели
+        if best is not None and course_deg is not None and abs(course_deg) >= self.s.bypass_course_min_deg:
+            want_right = course_deg > 0
+            toward = [x for x in free if (x > 0) == want_right]
+            if toward and min(abs(x) for x in toward) <= abs(best) + self.s.bypass_course_extra_m:
+                side = "right" if want_right else "left"
         self.recent.append(side)
         self.side = Counter(self.recent).most_common(1)[0][0]
         return self.side

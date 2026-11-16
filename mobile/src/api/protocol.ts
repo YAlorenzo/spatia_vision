@@ -73,6 +73,8 @@ export interface ConfigMessage {
 export interface PoseMessage {
   type: "pose";
   up: [number, number, number];
+  /** Курс относительно камеры, градусы (> 0 правее): сервер выбирает сторону обхода ближе к нему. */
+  course?: number | null;
 }
 
 // сервер -> клиент

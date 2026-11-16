@@ -170,7 +170,9 @@ async def websocket_endpoint(ws: WebSocket):
             elif msg.get("text") is not None:
                 if msg["text"].startswith('{"type":"pose"'):  # частое сообщение — без лишних попыток разбора
                     try:
-                        v = np.array(Pose.model_validate_json(msg["text"]).up, dtype=np.float64)
+                        pose = Pose.model_validate_json(msg["text"])
+                        session.course_deg = pose.course
+                        v = np.array(pose.up, dtype=np.float64)
                         n = np.linalg.norm(v)
                         pose_up = v / n if 0.5 < n < 1.5 else None  # мусор — игнорируем
                     except ValidationError:
