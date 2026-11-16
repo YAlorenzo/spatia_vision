@@ -1,5 +1,5 @@
 import { Platform } from "react-native";
-import type { Bypass, Obstacle } from "../api/protocol";
+import type { Obstacle } from "../api/protocol";
 
 /**
  * Пространственный звук: ОДНА главная опасность, всё остальное молчит.
@@ -23,12 +23,6 @@ const ALARM_INTERVAL_S = 0.9;
 // Камера вертикального телефона видит всего ±20°: без усиления всё звучит "по центру".
 // Угол на препятствие растягивается: 10° в кадре -> 30° в наушниках.
 const DIRECTION_GAIN = 3;
-// "Маячок" свободного прохода: мягкий звук со стороны, куда можно обойти, — на него идти
-const BEACON_INTERVAL_S = 1.1;
-const BEACON_AZIMUTH_DEG = 70;
-const BEACON_LEVEL = 0.5;
-const SCAN_FREE_M = 3.5; // осмотр: в эту сторону свободно, если на пути ничего ближе
-const SCAN_DING_INTERVAL_S = 0.7;
 const NEAR_PITCH_M = 3; // ближе — сигнал выше тоном (до +40%)
 const MASTER_GAIN = 1.25; // общая громкость сигналов
 const DUCK_GAIN = 0.15; // пока говорит голос — сигналы почти не слышны, слова важнее
@@ -62,9 +56,6 @@ class SpatialAudio {
   private master: GainNode | null = null;
   private panner: PannerNode | null = null; // главная опасность
   private alarmPanner: PannerNode | null = null; // едущее на тебя (если не главное)
-  private beaconPanner: PannerNode | null = null; // свободный проход
-  private bypass: "left" | "right" | null = null;
-  private nextBeacon = 0;
   private primary: Obstacle | null = null;
   private alarm: Obstacle | null = null;
   private nextBeep = 0;
@@ -77,8 +68,8 @@ class SpatialAudio {
   /** Человек стоит перед препятствием: сигнал редкий и тихий, голос подсказывает обход. */
   calm = false;
   /**
-   * Осмотр: человек стоит и поворачивает телефон в поисках прохода. Сигнал тихий (он не идёт
-   * на то, что попало в кадр), а когда в эту сторону свободно — приятный "динь" по центру.
+   * Осмотр: человек стоит и поворачивает телефон в поисках прохода. Сигнал тихий: он не идёт
+   * на то, что попало в кадр. О свободном направлении говорит голос.
    */
   scan = false;
   enabled = true;
@@ -117,7 +108,6 @@ class SpatialAudio {
     this.master = master;
     this.panner = mkPanner();
     this.alarmPanner = mkPanner();
-    this.beaconPanner = mkPanner();
   }
 
   private place(panner: PannerNode, bearingDeg: number) {
@@ -128,9 +118,8 @@ class SpatialAudio {
   }
 
   /** Новые данные от сервера. */
-  update(obstacles: Obstacle[], bypass: Bypass | null = null) {
+  update(obstacles: Obstacle[]) {
     this.lastUpdate = Date.now();
-    this.bypass = bypass === "left" || bypass === "right" ? bypass : null;
     const prevKey = this.primary ? `${this.primary.kind}:${this.primary.id}` : null;
     this.primary = obstacles.find((o) => o.primary) ?? null;
     this.alarm = obstacles.find((o) => o.moving && o.threat && !o.primary) ?? null;
@@ -196,16 +185,7 @@ class SpatialAudio {
     const p = fresh && this.enabled ? this.primary : null;
     const now = ctx.currentTime;
 
-    if (this.scan && !(p && p.in_path && p.distance <= SCAN_FREE_M)) {
-      // Осмотр, в эту сторону свободно: "динь" прямо по курсу
-      this.stopSolid();
-      if (now >= this.nextBeacon) {
-        this.beaconPanner!.positionX.value = 0;
-        this.beaconPanner!.positionZ.value = -1;
-        this.ding(this.beaconPanner!);
-        this.nextBeacon = now + SCAN_DING_INTERVAL_S;
-      }
-    } else if (p && (this.calm || this.scan)) {
+    if (p && (this.calm || this.scan)) {
       // Стоит: редкий тихий сигнал "препятствие всё ещё здесь", без непрерывного тона
       this.stopSolid();
       if (now >= this.nextBeep) {
@@ -220,15 +200,6 @@ class SpatialAudio {
         this.beep(this.panner!, p, 1.0);
         this.nextBeep = now + beepInterval(p);
       }
-    }
-
-    // Маячок прохода: есть препятствие на пути и сервер видит, с какой стороны его обойти
-    if (!this.scan && p && p.in_path && this.bypass && now >= this.nextBeacon) {
-      const az = ((this.bypass === "left" ? -BEACON_AZIMUTH_DEG : BEACON_AZIMUTH_DEG) * Math.PI) / 180;
-      this.beaconPanner!.positionX.value = Math.sin(az);
-      this.beaconPanner!.positionZ.value = -Math.cos(az);
-      this.ding(this.beaconPanner!);
-      this.nextBeacon = now + BEACON_INTERVAL_S;
     }
 
     const a = fresh && this.enabled ? this.alarm : null;
@@ -254,22 +225,6 @@ class SpatialAudio {
     osc.connect(env).connect(dest);
     osc.start(t);
     osc.stop(t + dur + 0.02);
-  }
-
-  /** Маячок свободного прохода: мягкий восходящий "динь" — приятный, не путается с сигналом опасности. */
-  private ding(dest: AudioNode) {
-    const ctx = this.ctx!;
-    const t = ctx.currentTime + 0.005;
-    const osc = new OscillatorNode(ctx, { type: "sine", frequency: 520 });
-    osc.frequency.setValueAtTime(520, t);
-    osc.frequency.exponentialRampToValueAtTime(780, t + 0.12);
-    const env = ctx.createGain();
-    env.gain.setValueAtTime(0.0001, t);
-    env.gain.exponentialRampToValueAtTime(BEACON_LEVEL, t + 0.015);
-    env.gain.exponentialRampToValueAtTime(0.0001, t + 0.28);
-    osc.connect(env).connect(dest);
-    osc.start(t);
-    osc.stop(t + 0.3);
   }
 
   /** Тревога "едет на тебя": два быстрых тона вверх-вниз. */

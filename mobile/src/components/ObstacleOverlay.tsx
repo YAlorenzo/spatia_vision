@@ -2,7 +2,7 @@ import { useState } from "react";
 import { LayoutChangeEvent, Text, View } from "react-native";
 import type { Obstacle } from "../api/protocol";
 import type { FrameSize } from "../api/useServerStream";
-import { alertColor, classLabel } from "./labels";
+import { boxColor, classLabel, zoneLetter } from "./labels";
 
 interface Props {
   obstacles: Obstacle[];
@@ -39,7 +39,7 @@ export const ObstacleOverlay = ({ obstacles, frameSize }: Props) => {
           const fh = frameSize!.height * scale;
           // Фон (статичное сбоку) — серый и полупрозрачный; люди/машины рядом — всегда цветом;
           // главная опасность — толстая рамка
-          const color = alertColor(o);
+          const color = boxColor(o);
           const background = o.alert === "none";
           return (
             <View
@@ -60,7 +60,7 @@ export const ObstacleOverlay = ({ obstacles, frameSize }: Props) => {
             >
               <View className="absolute -top-6 left-0 rounded px-1.5 py-0.5" style={{ backgroundColor: color }}>
                 <Text className="text-xs font-bold text-black" numberOfLines={1}>
-                  {classLabel(o.cls)} {o.distance.toFixed(1)} м{o.moving ? " · едет" : ""}
+                  {zoneLetter(o)} · {classLabel(o.cls)} {o.distance.toFixed(1)} m{o.moving ? " · moving" : ""}
                 </Text>
               </View>
             </View>

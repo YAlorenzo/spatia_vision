@@ -22,11 +22,10 @@ interface Options {
   beeps: boolean;
   speech: boolean;
   vibration: boolean;
-  verbose: boolean; // голос: подробно (иначе кратко)
 }
 
 /** Подаёт результаты сервера в звук, вибрацию и голос. */
-export function useAudioFeedback({ obstacles, groups, hints, bypass, active, beeps, speech, vibration, verbose }: Options) {
+export function useAudioFeedback({ obstacles, groups, hints, bypass, active, beeps, speech, vibration }: Options) {
   useEffect(() => {
     spatialAudio.enabled = beeps;
     announcer.enabled = speech;
@@ -49,7 +48,7 @@ export function useAudioFeedback({ obstacles, groups, hints, bypass, active, bee
   useEffect(() => {
     if (!active) return;
     const now = Date.now();
-    spatialAudio.update(obstacles, bypass);
+    spatialAudio.update(obstacles);
     announcer.update({
       obstacles,
       groups,
@@ -57,7 +56,6 @@ export function useAudioFeedback({ obstacles, groups, hints, bypass, active, bee
       tilt: cameraTilt.advice(now),
       bypass,
       calm: spatialAudio.calm,
-      verbose,
       heading: cameraTilt.heading(now),
       course: course.deviation(now),
     });
@@ -65,7 +63,7 @@ export function useAudioFeedback({ obstacles, groups, hints, bypass, active, bee
     spatialAudio.scan = announcer.scanning;
     haptics.calm = spatialAudio.calm || announcer.scanning;
     haptics.update(obstacles);
-  }, [obstacles, groups, hints, bypass, active, verbose]);
+  }, [obstacles, groups, hints, bypass, active]);
 }
 
 const NO_DATA_MS = 3000; // столько нет ответов сервера — "нет связи"
@@ -91,7 +89,7 @@ export function useConnectionWatchdog(obstacles: Obstacle[], speech: boolean): b
       setLost(silent);
       if (silent && speech && now - saidAt > NO_DATA_REPEAT_MS) {
         saidAt = now;
-        announcer.sayNow("Нет связи с сервером. Остановитесь");
+        announcer.sayNow("No connection to the server. Stop");
       }
     }, 500);
     return () => clearInterval(id);

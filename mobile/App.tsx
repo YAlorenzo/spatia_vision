@@ -19,14 +19,14 @@ export default function App() {
     return (
       <View className="flex-1 bg-zinc-950 items-center justify-center">
         <Text className="text-white text-3xl font-bold mb-8 text-center">
-          Доступ к камере
+          Camera access
         </Text>
         <TouchableOpacity
           className="bg-blue-500 py-4 px-10 rounded-2xl active:bg-blue-600"
           onPress={requestPermission}
         >
           <Text className="text-white text-xl font-black uppercase">
-            Разрешить
+            Allow
           </Text>
         </TouchableOpacity>
       </View>

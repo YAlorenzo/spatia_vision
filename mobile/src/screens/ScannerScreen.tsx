@@ -8,19 +8,17 @@ import { StreamStatus, useServerStream } from "../api/useServerStream";
 import { ObstacleOverlay } from "../components/ObstacleOverlay";
 import { useAudioFeedback, useConnectionWatchdog, useTiltAdvice } from "../audio/useAudioFeedback";
 import { announcer } from "../audio/announcer";
-import { spatialAudio } from "../audio/spatialAudio";
-import { course, courseRu } from "../sensors/course";
-import { listenOnce, parseCommand, voiceSupported } from "../sensors/voiceCommands";
-import { describe, setLabelScene, URGENCY_COLOR, zonesRu } from "../components/labels";
+import { course, courseText } from "../sensors/course";
+import { describe, setLabelScene, URGENCY_COLOR, zonesText } from "../components/labels";
 
 // CameraView — сторонний компонент, NativeWind должен знать, что className -> style
 cssInterop(CameraView, { className: "style" });
 
 const STATUS_TEXT: Record<StreamStatus, string> = {
-  connecting: "Подключение…",
-  streaming: "На связи",
-  reconnecting: "Переподключение…",
-  stopped: "Остановлено",
+  connecting: "Connecting…",
+  streaming: "Connected",
+  reconnecting: "Reconnecting…",
+  stopped: "Stopped",
 };
 
 const STATUS_DOT: Record<StreamStatus, string> = {
@@ -29,6 +27,9 @@ const STATUS_DOT: Record<StreamStatus, string> = {
   reconnecting: "bg-red-500",
   stopped: "bg-zinc-500",
 };
+
+// С какого расстояния голос говорит о неподвижном препятствии на пути (как в announcer.ts)
+const STATIC_ANNOUNCE_M = 5;
 
 interface ScannerScreenProps {
   onStop: () => void;
@@ -41,7 +42,6 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
   const [beeps, setBeeps] = useState(true);
   const [speech, setSpeech] = useState(true);
   const [vibration, setVibration] = useState(true);
-  const [verbose, setVerbose] = useState(false); // голос: кратко по умолчанию
   const url = useMemo(() => getServerUrl(), []);
 
   const { status, obstacles, groups, hints, bypass, stats, frameSize, error } = useServerStream({
@@ -55,7 +55,7 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
   useEffect(() => setLabelScene(scene), [scene]);
 
   const active = status === "streaming";
-  useAudioFeedback({ obstacles, groups, hints, bypass, active, beeps, speech, vibration, verbose });
+  useAudioFeedback({ obstacles, groups, hints, bypass, active, beeps, speech, vibration });
   const tilt = useTiltAdvice(active);
   const connectionLost = useConnectionWatchdog(obstacles, speech);
 
@@ -70,83 +70,34 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
   useEffect(() => () => course.clear(), []);
   const setCourse = () => {
     announcer.sayNow(
-      course.set(Date.now())
-        ? "Курс запомнен. Иду в эту сторону"
-        : "Курс недоступен: нет датчика поворота телефона",
+      course.set(Date.now()) ? "Course set. Heading this way" : "Course unavailable: no rotation sensor on this phone",
     );
   };
   const clearCourse = () => {
     course.clear();
-    announcer.sayNow("Курс сброшен");
-  };
-  const whereCourse = () => {
-    const dev = course.deviation(Date.now());
-    announcer.sayNow(dev == null ? "Курс не задан" : Math.abs(dev) < 12 ? "Вы на курсе" : courseRu(dev));
+    announcer.sayNow("Course cleared");
   };
 
-  // --- Голосовые команды (по нажатию кнопки, одна фраза) ---
-  const [listening, setListening] = useState(false);
-  const stateRef = useRef({ primary, bypass });
-  useEffect(() => {
-    stateRef.current = { primary, bypass };
-  }, [primary, bypass]);
-  const listen = () => {
-    if (listening) return;
-    if (!voiceSupported()) {
-      announcer.sayNow("Голосовые команды в этом браузере не работают");
-      return;
-    }
-    window.speechSynthesis?.cancel();
-    spatialAudio.duck(true); // чтобы микрофон не ловил сигналы
-    setListening(true);
-    listenOnce((text, err) => {
-      setListening(false);
-      spatialAudio.duck(false);
-      const cmd = text ? parseCommand(text) : null;
-      if (!cmd) {
-        announcer.sayNow(
-          err === "not-allowed"
-            ? "Нет доступа к микрофону"
-            : "Не понял. Команды: курс, сброс курса, куда, что впереди, подробно, кратко, повтори",
-        );
-        return;
-      }
-      if (cmd === "course") setCourse();
-      else if (cmd === "clear_course") clearCourse();
-      else if (cmd === "where") whereCourse();
-      else if (cmd === "repeat") announcer.repeat();
-      else if (cmd === "verbose") {
-        setVerbose(true);
-        announcer.sayNow("Говорю подробно");
-      } else if (cmd === "brief") {
-        setVerbose(false);
-        announcer.sayNow("Говорю кратко");
-      } else if (cmd === "ahead") {
-        const st = stateRef.current;
-        const side = st.bypass === "left" ? ". Обход слева" : st.bypass === "right" ? ". Обход справа" : "";
-        announcer.sayNow(st.primary ? describe(st.primary) + side : "Впереди свободно");
-      }
-    });
-  };
   const otherThreats = obstacles.filter((o) => o.threat && !o.primary).length;
   const notices = [
-    ...(connectionLost ? ["Нет связи — остановитесь"] : []),
-    ...(listening ? ["Слушаю команду…"] : []),
-    ...(courseDev != null ? [Math.abs(courseDev) < 12 ? "На курсе" : `${courseRu(courseDev)} (${Math.abs(Math.round(courseDev))}°)`] : []),
-    // Совет обхода показываем там же, где голос его говорит: препятствие на пути ближе 4 м
-    ...(primary && primary.in_path && primary.distance <= 4
-      ? bypass === "left" ? ["Обход слева"] : bypass === "right" ? ["Обход справа"] : bypass === "none" ? ["Прохода не видно"] : []
+    ...(connectionLost ? ["No connection — stop"] : []),
+    ...(courseDev != null ? [Math.abs(courseDev) < 12 ? "On course" : courseText(courseDev)] : []),
+    // Совет обхода показываем там же, где голос его говорит: неподвижное препятствие на пути ближе 5 м
+    ...(primary && primary.in_path && !primary.moving && primary.distance <= STATIC_ANNOUNCE_M
+      ? bypass === "left"
+        ? ["Pass on the left"]
+        : bypass === "right"
+          ? ["Pass on the right"]
+          : bypass === "none"
+            ? ["No way around in view"]
+            : []
       : []),
-    ...(hints.includes("too_dark") ? ["Темно — остановитесь"] : []),
-    ...(hints.includes("blurry") ? ["Размыто — остановитесь"] : []),
-    ...groups.map((g) =>
-      g.type === "crowd"
-        ? `Толпа ${zonesRu(g.zones)}`
-        : g.type === "cluster"
-          ? `Группа объектов ${zonesRu(g.zones)}`
-          : "Парковка — осторожно",
-    ),
-    ...(tilt === "raise" ? ["Поднимите телефон выше"] : tilt === "lower" ? ["Опустите телефон"] : []),
+    ...(hints.includes("too_dark") ? ["Too dark — stop"] : []),
+    ...(hints.includes("blurry") ? ["Blurry image — stop"] : []),
+    ...groups
+      .filter((g) => g.type !== "cluster")
+      .map((g) => (g.type === "crowd" ? `Group of people ${zonesText(g.zones)}` : "Parking area — caution")),
+    ...(tilt === "raise" ? ["Raise the phone"] : tilt === "lower" ? ["Lower the phone"] : []),
   ];
 
   return (
@@ -169,14 +120,14 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
           </View>
           {status === "streaming" && (
             <Text className="text-zinc-300 text-xs">
-              {stats.fps.toFixed(1)} к/с · {Math.round(stats.rttMs)} мс · {Math.round(stats.frameKb)} КБ
+              {stats.fps.toFixed(1)} fps · {Math.round(stats.rttMs)} ms · {Math.round(stats.frameKb)} KB
             </Text>
           )}
         </View>
 
         <View className="flex-row flex-wrap gap-2">
           <View className="flex-row rounded-2xl bg-black/60 p-1">
-            {(["outdoor", "indoor"] as const).map((s) => (
+            {(["indoor", "outdoor"] as const).map((s) => (
               <TouchableOpacity
                 key={s}
                 onPress={() => setScene(s)}
@@ -184,16 +135,15 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
                 accessibilityRole="button"
                 accessibilityState={{ selected: scene === s }}
               >
-                <Text className="text-white font-semibold">{s === "outdoor" ? "Улица" : "Помещение"}</Text>
+                <Text className="text-white font-semibold">{s === "outdoor" ? "Outdoor" : "Indoor"}</Text>
               </TouchableOpacity>
             ))}
           </View>
           <View className="flex-row rounded-2xl bg-black/60 p-1">
             {[
-              { label: "Звук", on: beeps, toggle: () => setBeeps((v) => !v) },
-              { label: "Голос", on: speech, toggle: () => setSpeech((v) => !v) },
-              { label: "Вибро", on: vibration, toggle: () => setVibration((v) => !v) },
-              { label: "Подробно", on: verbose, toggle: () => setVerbose((v) => !v) },
+              { label: "Beeps", on: beeps, toggle: () => setBeeps((v) => !v) },
+              { label: "Voice", on: speech, toggle: () => setSpeech((v) => !v) },
+              { label: "Vibration", on: vibration, toggle: () => setVibration((v) => !v) },
             ].map((t) => (
               <TouchableOpacity
                 key={t.label}
@@ -223,28 +173,20 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
         )}
       </View>
 
-      {/* Главная опасность + стоп */}
+      {/* Курс, главная опасность, стоп */}
       <View className="absolute bottom-10 w-full items-center gap-4 px-6">
-        {/* Курс и голосовая команда — большие кнопки, чтобы попасть не глядя */}
-        <View className="w-full flex-row gap-3">
-          <TouchableOpacity
-            className={`flex-1 rounded-3xl py-4 items-center ${courseDev != null ? "bg-emerald-600" : "bg-blue-600"}`}
-            onPress={setCourse}
-            onLongPress={clearCourse}
-            accessibilityRole="button"
-            accessibilityLabel="Запомнить курс: иду туда, куда направлен телефон. Долгое нажатие — сбросить курс"
-          >
-            <Text className="text-white text-lg font-black">{courseDev != null ? "Курс задан" : "Задать курс"}</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            className={`flex-1 rounded-3xl py-4 items-center ${listening ? "bg-amber-500" : "bg-zinc-700"}`}
-            onPress={listen}
-            accessibilityRole="button"
-            accessibilityLabel="Голосовая команда"
-          >
-            <Text className="text-white text-lg font-black">{listening ? "Слушаю…" : "Команда"}</Text>
-          </TouchableOpacity>
-        </View>
+        {/* Большая кнопка, чтобы попасть не глядя: нажатие — запомнить курс, долгое — сбросить */}
+        <TouchableOpacity
+          className={`w-full rounded-3xl py-4 items-center ${courseDev != null ? "bg-emerald-600" : "bg-blue-600"}`}
+          onPress={setCourse}
+          onLongPress={clearCourse}
+          accessibilityRole="button"
+          accessibilityLabel="Set course: I am heading where the phone points. Long press clears the course"
+        >
+          <Text className="text-white text-lg font-black">
+            {courseDev != null ? "Course set · hold to clear" : "Set course"}
+          </Text>
+        </TouchableOpacity>
 
         <View
           className="w-full rounded-3xl bg-black/70 px-5 py-4"
@@ -257,11 +199,11 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
             </Text>
           ) : (
             <Text className="text-zinc-300 text-xl font-bold text-center">
-              {status === "streaming" ? "Путь свободен" : "Ожидание сервера"}
+              {status === "streaming" ? "Path clear" : "Waiting for server"}
             </Text>
           )}
           {otherThreats > 0 && (
-            <Text className="text-zinc-400 text-sm text-center mt-1">ещё опасностей: {otherThreats}</Text>
+            <Text className="text-zinc-400 text-sm text-center mt-1">other hazards: {otherThreats}</Text>
           )}
         </View>
 
@@ -269,7 +211,7 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
           className="bg-red-500 py-5 w-4/5 rounded-3xl items-center active:bg-red-600"
           onPress={onStop}
         >
-          <Text className="text-white text-2xl font-black uppercase text-center">Остановить</Text>
+          <Text className="text-white text-2xl font-black uppercase text-center">Stop</Text>
         </TouchableOpacity>
       </View>
     </View>

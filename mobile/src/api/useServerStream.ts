@@ -150,7 +150,7 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
         try {
           base64 = await captureFrame();
         } catch (e) {
-          console.warn("[stream] ошибка захвата кадра", e);
+          console.warn("[stream] frame capture failed", e);
         }
         if (!base64) {
           await sleep(CAMERA_RETRY_MS);
@@ -224,13 +224,13 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
         } else if (msg.type === "result") {
           if (pending?.seq === msg.seq) resolvePending(msg); // устаревшие ответы игнорируем
         } else if (msg.type === "error") {
-          console.warn("[stream] сервер:", msg.message);
+          console.warn("[stream] server:", msg.message);
           setError(msg.message);
           resolvePending(null);
         }
       };
 
-      ws.onerror = () => setError(`Нет связи с сервером (${url})`);
+      ws.onerror = () => setError(`No connection to the server (${url})`);
 
       ws.onclose = () => {
         resolvePending(null);
