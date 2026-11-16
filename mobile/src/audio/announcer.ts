@@ -1,7 +1,7 @@
 import { Platform } from "react-native";
 import type { Bypass, Group, Hint, Obstacle } from "../api/protocol";
 import type { TiltAdvice } from "../sensors/cameraTilt";
-import { classLabel, groupText, meters, where } from "../components/labels";
+import { classLabel, groupText, meters, spokenDistance, where } from "../components/labels";
 import { courseText } from "../sensors/course";
 
 /**
@@ -34,7 +34,10 @@ const DANGER_GAP_MS = 3000; // между любыми тревогами
 const SAME_PRIMARY_MS = 6000; // та же главная опасность вернулась — не повторяем сразу
 const STATIC_ANNOUNCE_M = 5; // неподвижное — говорим с этого расстояния
 const DYNAMIC_ANNOUNCE_M = 10; // люди, животные (и транспорт на пути) — заранее
-const PRIMARY_GAP_MS = 5000; // новое препятствие на пути объявляем не чаще
+const PRIMARY_GAP_MS = 4000; // новое препятствие на пути объявляем не чаще
+const URGENT_M = 2.5; // ...а близкое —
+const URGENT_GAP_MS = 1500; // не чаще этого
+const NEAR_M = 2; // то же препятствие стало ближе — короткое уточнение
 const INTERRUPT_M = 3; // новая главная опасность ближе — перебивает обычную фразу
 const NOTICE_REPEAT_MS = 20000; // тот же человек/машина — не чаще
 const CROWD_REPEAT_MS = 20000;
@@ -98,16 +101,20 @@ export interface AnnouncerInput {
 // стена сменилась стулом в той же зоне — это новое препятствие, о нём надо сказать
 const keyOf = (o: Obstacle) => (o.kind === "obstacle" ? `obstacle:${o.id}:${o.cls}` : `${o.kind}:${o.id ?? o.cls}`);
 const norm = (a: number) => ((((a + 180) % 360) + 360) % 360) - 180;
-const passText = (b: Bypass) => `Pass on the ${b}`;
+const passText = (b: Bypass) => `Pass ${b}`; // коротко: длинная фраза устаревает, пока звучит
+/** Расстояние с упреждением на время речи. */
+const dist = (o: Obstacle) => meters(spokenDistance(o));
 /** С какого расстояния говорим об объекте. */
 const announceRange = (o: Obstacle) => (o.kind === "obstacle" ? STATIC_ANNOUNCE_M : DYNAMIC_ANNOUNCE_M);
 
-/** "Person approaching ahead, 8 meters" / "Car moving on the left, 15 meters" / "Person on the right, 6 meters". */
+const whereShort = (o: Obstacle) => (o.in_path ? "ahead" : o.bearing < 0 ? "left" : "right");
+
+/** "Person approaching, 8 meters ahead" / "Car moving on the left, 15 meters" / "Person on the right, 6 meters". */
 function noticeText(o: Obstacle): string {
   const state = o.moving
     ? o.kind === "vehicle" ? " moving" : " running"
     : o.kind !== "vehicle" && o.own_speed > 0.5 ? " approaching" : "";
-  return `${classLabel(o.cls)}${state} ${where(o)}, ${meters(o.distance)}`;
+  return `${classLabel(o.cls)}${state}, ${dist(o)} ${whereShort(o)}`;
 }
 
 interface Scan {
@@ -143,6 +150,8 @@ export class AnnouncerLogic {
   private courseSaidAt = -Infinity;
   private courseWasOff = false;
   private scan: Scan | null = null;
+  private saidDist = new Map<string, number>(); // на каком расстоянии объявили препятствие
+  private nearSaid: string | null = null; // для какого препятствия уже было уточнение вблизи
   lastEndAt = 0; // когда закончилась последняя фраза (для паузы)
 
   /** Идёт осмотр (человек стоит и поворачивает телефон) — сигнал в это время тихий. */
@@ -152,6 +161,8 @@ export class AnnouncerLogic {
 
   reset() {
     this.scan = null;
+    this.saidDist.clear();
+    this.nearSaid = null;
     this.primaryPhraseAt = -Infinity;
     this.guide = { bypass: null, at: -Infinity };
     this.tiltKind = null;
@@ -187,7 +198,7 @@ export class AnnouncerLogic {
         this.dangerAt.set(k, now);
         this.lastDangerAt = now;
         this.noticeAt.set(k, now); // не повторять тем же как обычное оповещение
-        return this.say(`Warning! ${classLabel(danger.cls)} ${where(danger)}, ${meters(danger.distance)}`, true, now);
+        return this.say(`Warning! ${classLabel(danger.cls)} ${where(danger)}, ${dist(danger)}`, true, now);
       }
     }
 
@@ -204,7 +215,9 @@ export class AnnouncerLogic {
       // 2. Новое препятствие на пути: неподвижное — с 5 м, живое/транспорт — с 10 м.
       //    В тесном месте препятствия меняются каждую секунду — объявляем не чаще раза в 5 с;
       //    срочность в это время передаёт сигнал.
-      const rested = p.moving || now - this.primaryPhraseAt >= PRIMARY_GAP_MS;
+      // Близкое (< 2.5 м) ждёт меньше: иначе о нём скажем, когда человек уже у него
+      const sinceLast = now - this.primaryPhraseAt;
+      const rested = p.moving || sinceLast >= PRIMARY_GAP_MS || (p.distance < URGENT_M && sinceLast >= URGENT_GAP_MS);
       if (k !== this.primaryKey && rested && (p.distance <= announceRange(p) || p.moving)) {
         // Близкая (< 3 м) перебивает второстепенную фразу, но не другую фразу об опасности
         const urgent = speaking && !this.lastWasDanger && !this.lastWasPrimary && p.distance < INTERRUPT_M;
@@ -214,6 +227,7 @@ export class AnnouncerLogic {
           this.primarySaidAt.set(k, now);
           this.primaryPhraseAt = now;
           this.noticeAt.set(k, now);
+          this.saidDist.set(k, p.distance);
           // Сразу и совет, с какой стороны обойти (если сервер видит проход)
           const hasSide = p.in_path && (bypass === "left" || bypass === "right");
           this.guide = { bypass: hasSide ? bypass : null, at: now, key: k };
@@ -221,6 +235,14 @@ export class AnnouncerLogic {
           return this.say(`${noticeText(p)}${side}`, false, now, urgent, true);
         }
       }
+    }
+
+    // Уточнение вблизи: о препятствии сказали издалека ("5 meters") — на 2 м коротко напомнить
+    if (p && quiet && p.in_path && !p.moving && keyOf(p) === this.primaryKey && p.distance <= NEAR_M
+        && this.nearSaid !== keyOf(p) && (this.saidDist.get(keyOf(p)) ?? 0) > NEAR_M + 0.7) {
+      this.nearSaid = keyOf(p);
+      this.primaryPhraseAt = now;
+      return this.say(`${classLabel(p.cls)}, ${dist(p)}`, false, now, false, true);
     }
 
     if (!quiet) return null;
@@ -251,7 +273,7 @@ export class AnnouncerLogic {
         this.guide = { bypass, at: now, key: k };
         this.primaryKey = k;
         this.primaryPhraseAt = now;
-        return this.say(`${classLabel(p.cls)}, ${meters(p.distance)}. ${passText(bypass)}`, false, now, false, true);
+        return this.say(`${classLabel(p.cls)}, ${dist(p)}. ${passText(bypass)}`, false, now, false, true);
       }
     }
 
@@ -461,7 +483,10 @@ class Announcer {
     const pickVoice = () => {
       const voices = window.speechSynthesis.getVoices();
       const en = voices.filter((v) => v.lang.toLowerCase().startsWith("en"));
-      this.voice = en.find((v) => v.lang.toLowerCase().replace("_", "-") === "en-us") ?? en[0] ?? null;
+      // Сначала голос, встроенный в телефон: сетевой начинает говорить с задержкой до секунды
+      const local = en.filter((v) => v.localService);
+      const pool = local.length ? local : en;
+      this.voice = pool.find((v) => v.lang.toLowerCase().replace("_", "-") === "en-us") ?? pool[0] ?? null;
     };
     pickVoice();
     window.speechSynthesis.onvoiceschanged = pickVoice;
@@ -485,7 +510,7 @@ class Announcer {
     const u = this.logic.pick(input, Date.now(), synth.speaking);
     if (!u) return;
     if (u.danger || u.interrupt) synth.cancel();
-    const utt = this.utter(u.text, 1.2);
+    const utt = this.utter(u.text, 1.3);
     utt.onstart = () => this.onSpeakingChange?.(true);
     utt.onend = utt.onerror = () => {
       this.logic.lastEndAt = Date.now();

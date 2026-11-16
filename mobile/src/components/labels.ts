@@ -50,6 +50,16 @@ export function setLabelScene(scene: Scene) {
 
 export const classLabel = (cls: string) => (cls === "pole" && indoor ? "Pillar" : (CLASS_EN[cls] ?? cls));
 
+/**
+ * Расстояние, которое будет верным, когда голос его договорит. Фраза звучит ~1.5 с, человек идёт —
+ * без упреждения "5 meters" звучит, когда до препятствия уже 3. Берём скорость сближения с сервера.
+ */
+const SPEECH_LEAD_S = 0.8; // число звучит почти в начале фразы
+export function spokenDistance(o: Obstacle): number {
+  const closing = Math.max(0, Math.min(o.approach, 2.5)); // удаляется — не упреждаем; шум — ограничиваем
+  return Math.max(0.5, o.distance - closing * SPEECH_LEAD_S);
+}
+
 /** "1 meter", "3 meters", "one and a half meters", "less than a meter" — для речи и экрана. */
 export function meters(d: number): string {
   if (d < 0.9) return "less than a meter";
@@ -70,15 +80,23 @@ export function describe(o: Obstacle): string {
 }
 
 /**
- * Цвет рамки:
- *   на пути / едет на тебя — красный, жёлтый или зелёный по срочности;
- *   люди, транспорт, животные — оранжевый (о них предупреждаем заранее);
- *   остальные предметы и препятствия не на пути — белый.
+ * Насколько объект важен на экране:
+ *   threat — на пути или едет на тебя: яркая рамка, красный / жёлтый / зелёный по срочности;
+ *   watch  — человек, транспорт или животное ближе 10 м (о них предупреждаем заранее): оранжевая;
+ *   idle   — всё остальное, что видно, но не угрожает: тусклая серая, чтобы не было каши.
  */
+export type BoxLevel = "threat" | "watch" | "idle";
+const WATCH_M = 10;
+
+export function boxLevel(o: Obstacle): BoxLevel {
+  if (o.threat) return "threat";
+  if (o.kind !== "obstacle" && (o.distance <= WATCH_M || o.moving)) return "watch";
+  return "idle";
+}
+
 export function boxColor(o: Obstacle): string {
-  if (o.threat) return URGENCY_COLOR[o.urgency];
-  if (o.kind !== "obstacle") return "#fb923c";
-  return "#e4e4e7";
+  const level = boxLevel(o);
+  return level === "threat" ? URGENCY_COLOR[o.urgency] : level === "watch" ? "#fb923c" : "#9ca3af";
 }
 
 const ZONE_EN: Record<Zone, string> = { left: "on the left", center: "ahead", right: "on the right" };
