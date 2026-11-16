@@ -37,6 +37,7 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
   const [beeps, setBeeps] = useState(true);
   const [speech, setSpeech] = useState(true);
   const [vibration, setVibration] = useState(true);
+  const [verbose, setVerbose] = useState(false); // голос: кратко по умолчанию
   const url = useMemo(() => getServerUrl(), []);
 
   const { status, obstacles, groups, hints, bypass, stats, frameSize, error } = useServerStream({
@@ -50,7 +51,7 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
   useEffect(() => setLabelScene(scene), [scene]);
 
   const active = status === "streaming";
-  useAudioFeedback({ obstacles, groups, hints, bypass, active, beeps, speech, vibration });
+  useAudioFeedback({ obstacles, groups, hints, bypass, active, beeps, speech, vibration, verbose });
   const tilt = useTiltAdvice(active);
   const connectionLost = useConnectionWatchdog(obstacles, speech);
 
@@ -115,6 +116,7 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
               { label: "Звук", on: beeps, toggle: () => setBeeps((v) => !v) },
               { label: "Голос", on: speech, toggle: () => setSpeech((v) => !v) },
               { label: "Вибро", on: vibration, toggle: () => setVibration((v) => !v) },
+              { label: "Подробно", on: verbose, toggle: () => setVerbose((v) => !v) },
             ].map((t) => (
               <TouchableOpacity
                 key={t.label}

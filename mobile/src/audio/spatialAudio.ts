@@ -27,6 +27,8 @@ const DIRECTION_GAIN = 3;
 const BEACON_INTERVAL_S = 1.1;
 const BEACON_AZIMUTH_DEG = 70;
 const BEACON_LEVEL = 0.5;
+const SCAN_FREE_M = 3.5; // осмотр: в эту сторону свободно, если на пути ничего ближе
+const SCAN_DING_INTERVAL_S = 0.7;
 const NEAR_PITCH_M = 3; // ближе — сигнал выше тоном (до +40%)
 const MASTER_GAIN = 1.25; // общая громкость сигналов
 const DUCK_GAIN = 0.15; // пока говорит голос — сигналы почти не слышны, слова важнее
@@ -74,6 +76,11 @@ class SpatialAudio {
   private calmDist = 0;
   /** Человек стоит перед препятствием: сигнал редкий и тихий, голос подсказывает обход. */
   calm = false;
+  /**
+   * Осмотр: человек стоит и поворачивает телефон в поисках прохода. Сигнал тихий (он не идёт
+   * на то, что попало в кадр), а когда в эту сторону свободно — приятный "динь" по центру.
+   */
+  scan = false;
   enabled = true;
 
   get supported() {
@@ -189,7 +196,16 @@ class SpatialAudio {
     const p = fresh && this.enabled ? this.primary : null;
     const now = ctx.currentTime;
 
-    if (p && this.calm) {
+    if (this.scan && !(p && p.in_path && p.distance <= SCAN_FREE_M)) {
+      // Осмотр, в эту сторону свободно: "динь" прямо по курсу
+      this.stopSolid();
+      if (now >= this.nextBeacon) {
+        this.beaconPanner!.positionX.value = 0;
+        this.beaconPanner!.positionZ.value = -1;
+        this.ding(this.beaconPanner!);
+        this.nextBeacon = now + SCAN_DING_INTERVAL_S;
+      }
+    } else if (p && (this.calm || this.scan)) {
       // Стоит: редкий тихий сигнал "препятствие всё ещё здесь", без непрерывного тона
       this.stopSolid();
       if (now >= this.nextBeep) {
@@ -207,7 +223,7 @@ class SpatialAudio {
     }
 
     // Маячок прохода: есть препятствие на пути и сервер видит, с какой стороны его обойти
-    if (p && p.in_path && this.bypass && now >= this.nextBeacon) {
+    if (!this.scan && p && p.in_path && this.bypass && now >= this.nextBeacon) {
       const az = ((this.bypass === "left" ? -BEACON_AZIMUTH_DEG : BEACON_AZIMUTH_DEG) * Math.PI) / 180;
       this.beaconPanner!.positionX.value = Math.sin(az);
       this.beaconPanner!.positionZ.value = -Math.cos(az);

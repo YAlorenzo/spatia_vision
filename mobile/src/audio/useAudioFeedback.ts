@@ -21,10 +21,11 @@ interface Options {
   beeps: boolean;
   speech: boolean;
   vibration: boolean;
+  verbose: boolean; // голос: подробно (иначе кратко)
 }
 
 /** Подаёт результаты сервера в звук, вибрацию и голос. */
-export function useAudioFeedback({ obstacles, groups, hints, bypass, active, beeps, speech, vibration }: Options) {
+export function useAudioFeedback({ obstacles, groups, hints, bypass, active, beeps, speech, vibration, verbose }: Options) {
   useEffect(() => {
     spatialAudio.enabled = beeps;
     announcer.enabled = speech;
@@ -46,18 +47,23 @@ export function useAudioFeedback({ obstacles, groups, hints, bypass, active, bee
 
   useEffect(() => {
     if (!active) return;
+    const now = Date.now();
     spatialAudio.update(obstacles, bypass);
-    haptics.calm = spatialAudio.calm;
-    haptics.update(obstacles);
     announcer.update({
       obstacles,
       groups,
       hints,
-      tilt: cameraTilt.advice(Date.now()),
+      tilt: cameraTilt.advice(now),
       bypass,
       calm: spatialAudio.calm,
+      verbose,
+      heading: cameraTilt.heading(now),
     });
-  }, [obstacles, groups, hints, bypass, active]);
+    // Осмотр (человек поворачивает телефон): сигнал тихий, вибрации нет
+    spatialAudio.scan = announcer.scanning;
+    haptics.calm = spatialAudio.calm || announcer.scanning;
+    haptics.update(obstacles);
+  }, [obstacles, groups, hints, bypass, active, verbose]);
 }
 
 const NO_DATA_MS = 3000; // столько нет ответов сервера — "нет связи"
