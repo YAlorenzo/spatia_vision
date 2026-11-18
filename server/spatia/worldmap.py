@@ -202,8 +202,10 @@ class WorldMap:
         u = self.to_user(target[None], heading_deg)[0]
         return math.degrees(math.atan2(u[0], max(u[1], 0.05)))
 
-    def view(self, heading_deg: float | None, course_world_deg: float | None) -> dict:
-        """Для экрана "карта": занятые клетки, маршрут, люди — относительно человека, оси мира."""
+    def view(self, heading_deg: float | None, course_world_deg: float | None,
+             seen: list[tuple[str, str, float, float]] | None = None) -> dict:
+        """Для экрана "карта": занятые клетки, маршрут, люди и то, что видно сейчас (с названиями), —
+        относительно человека, оси мира. seen — (вид, класс, X вправо, Z вперёд) объектов этого кадра."""
         res = self.s.map_view_cell_m
         occ, corner = self._window(res)
         ys, xs = np.nonzero(occ)
@@ -216,6 +218,11 @@ class WorldMap:
             "occ": flat,
             "path": [rel(p) for p in self.path] if self.path else None,
             "people": [rel(p) for p in self.dynamic[:20]],
+            "seen": [
+                {"kind": kind, "cls": cls, **dict(zip(("x", "y"), rel(w)))}
+                for (kind, cls, _, _), w in zip(seen or [], self.to_world(np.array([[x, z] for _, _, x, z in seen]), heading_deg)
+                                                if seen and heading_deg is not None else [])
+            ][:30],
             "heading": None if heading_deg is None else round(heading_deg, 1),
             "course": None if course_world_deg is None else round(course_world_deg % 360, 1),
         }

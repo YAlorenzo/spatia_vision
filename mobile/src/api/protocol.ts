@@ -27,6 +27,7 @@ export interface MapView {
   occ: number[]; // занятые клетки: [x0, y0, x1, y1, ...] в клетках
   path: [number, number][] | null; // маршрут по курсу, м
   people: [number, number][]; // люди / транспорт сейчас, м
+  seen: { kind: Kind; cls: string; x: number; y: number }[]; // что видно сейчас, с названиями, м
   heading: number | null; // куда смотрит камера по компасу, градусы
   course: number | null; // курс по компасу, градусы
 }
@@ -97,6 +98,7 @@ export interface ReadyMessage {
   v: number;
   session: string;
   max_width: number;
+  features?: string[]; // что умеет сервер: нет нужного — сервер старый, его надо перезапустить
 }
 
 export interface ResultMessage {

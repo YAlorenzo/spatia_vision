@@ -53,7 +53,7 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
     return () => setWantMap(false);
   }, [showMap]);
 
-  const { status, obstacles, groups, hints, bypass, map, stats, frameSize, error } = useServerStream({
+  const { status, obstacles, groups, hints, bypass, map, serverOutdated, stats, frameSize, error } = useServerStream({
     url,
     cameraRef,
     cameraReady,
@@ -98,6 +98,7 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
 
   const otherThreats = obstacles.filter((o) => o.threat && !o.primary).length;
   const notices = [
+    ...(serverOutdated ? ["Server outdated — restart it"] : []),
     ...(connectionLost ? ["No connection — stop"] : []),
     ...(courseDev != null ? [Math.abs(courseDev) < 12 ? "On course" : courseText(courseDev)] : []),
     // Совет обхода показываем там же, где голос его говорит: неподвижное препятствие на пути ближе 5 м

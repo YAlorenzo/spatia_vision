@@ -81,6 +81,9 @@ class Ready(BaseModel):
     v: int = PROTOCOL_VERSION
     session: str
     max_width: int = CLIENT_MAX_WIDTH
+    # Что умеет этот сервер. Клиент новее сервера (сервер не перезапустили после обновления) —
+    # видит, что функции нет, и просит перезапустить сервер.
+    features: list[str] = ["map", "motion"]
 
 
 class Result(BaseModel):

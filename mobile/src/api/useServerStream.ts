@@ -81,6 +81,8 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
   const [stats, setStats] = useState<StreamStats>(EMPTY_STATS);
   const [frameSize, setFrameSize] = useState<FrameSize | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Страница новее сервера (сервер не перезапустили после обновления) — карты и датчиков не будет
+  const [serverOutdated, setServerOutdated] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const cameraReadyRef = useRef(cameraReady);
@@ -234,6 +236,7 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
         }
         if (msg.type === "ready") {
           maxWidth = msg.max_width;
+          setServerOutdated(!(msg.features ?? []).includes("map"));
           reconnectDelay = 500;
           setError(null);
           setStatus("streaming");
@@ -279,6 +282,7 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
     hints: sceneState.hints,
     bypass: sceneState.bypass,
     map: sceneState.map,
+    serverOutdated,
     stats,
     frameSize,
     error,

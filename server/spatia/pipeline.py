@@ -348,7 +348,10 @@ class Session:
             hints=hints,
             bypass=bypass,
             lanes=(offsets, lane_state),
-            map_view=self.map.view(self.heading_deg, course_world) if self.want_map else None,
+            map_view=self.map.view(self.heading_deg if self.heading_deg is not None else self.map.heading, course_world, [
+                (o.kind, o.detection.cls, math.copysign(o.lateral_m, o.bearing_deg), o.forward_m)
+                for o in objects if o.forward_m < self.s.map_view_m / 2
+            ] + [("obstacle", e[1], e[3], e[2]) for e in extras if e[2] < self.s.map_view_m / 2]) if self.want_map else None,
             path_bearing=None if path_bearing is None else round(path_bearing, 1),
             timings_ms={
                 "detect": (t1 - t0) * 1000,
