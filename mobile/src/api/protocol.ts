@@ -110,6 +110,7 @@ export interface ResultMessage {
   bypass?: Bypass | null;
   map?: MapView | null;
   path_bearing?: number | null;
+  near?: { left: number | null; right: number | null } | null; // препятствие сбоку рядом (по карте), м
   server_ms: number;
   dropped: number;
 }

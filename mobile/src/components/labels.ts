@@ -93,9 +93,17 @@ export function boxLevel(o: Obstacle): BoxLevel {
   return "idle";
 }
 
+/** Неподвижное на пути: ближе 4 м — красный, 4–6 м — жёлтый (как ступени сигнала). */
+export const STATIC_RED_M = 4;
+export const STATIC_YELLOW_M = 6;
+
 export function boxColor(o: Obstacle): string {
   const level = boxLevel(o);
-  return level === "threat" ? URGENCY_COLOR[o.urgency] : level === "watch" ? "#fb923c" : "#9ca3af";
+  if (level === "threat") {
+    if (!o.moving && o.in_path) return o.distance <= STATIC_RED_M ? URGENCY_COLOR.high : URGENCY_COLOR.medium;
+    return URGENCY_COLOR[o.urgency];
+  }
+  return level === "watch" ? "#fb923c" : "#d4d4d8";
 }
 
 /** Стороны группы без "впереди" (по умолчанию всё впереди): ["left","center"] -> "left", ["left","right"] -> "left and right". */

@@ -45,7 +45,9 @@ class ThreatAssessor:
         self.moving_since.clear()
         self.seen.clear()
 
-    def assess(self, objects: list[TrackedObject], ego_speed: float, focal: float, t: float) -> TrackedObject | None:
+    def assess(self, objects: list[TrackedObject], ego_speed: float, focal: float, t: float,
+               known=None) -> TrackedObject | None:
+        """known(o) -> bool: препятствие уже есть на карте местности (видели раньше, например сбоку)."""
         s = self.s
         for o in objects:
             d = o.distance.smoothed_m
@@ -120,7 +122,8 @@ class ThreatAssessor:
             ttc_walk = o.forward_m / max(o.approach_mps if o.motion_valid else 0.0, s.walk_speed_mps)
             cap = s.confirm_obstacle_s if o.kind == "obstacle" else s.confirm_object_s
             need = min(cap, max(s.confirm_min_s, s.confirm_ttc_frac * ttc_walk))
-            confirmed = present_for >= need or d <= s.instant_range_m or self._seen_aside(o, t, need)
+            confirmed = (present_for >= need or d <= s.instant_range_m or self._seen_aside(o, t, need)
+                         or (known is not None and o.kind == "obstacle" and known(o)))
             if not confirmed:
                 ttc = None
 

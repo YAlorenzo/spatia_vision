@@ -176,6 +176,41 @@ class WorldMap:
         self.path = [(float(x), float(y)) for x, y in pts]
         return self.path
 
+    def known(self, x_m: float, z_m: float, heading_deg: float | None) -> bool:
+        """На карте уже есть препятствие в этой точке (X вправо, Z вперёд от человека), с точностью ~0.3 м.
+        Нужно, чтобы препятствие, которое видели сбоку, сразу стало угрозой, когда к нему повернулся."""
+        if heading_deg is None:
+            return False
+        w = self.to_world(np.array([[x_m, z_m]]), heading_deg)[0]
+        c = np.floor((w - self.origin) / self.res).astype(int)
+        r = int(round(0.3 / self.res))
+        x0, x1 = max(0, c[0] - r), min(self.n, c[0] + r + 1)
+        y0, y1 = max(0, c[1] - r), min(self.n, c[1] + r + 1)
+        if x1 <= x0 or y1 <= y0:
+            return False
+        return bool((self.grid[y0:y1, x0:x1] >= self.s.map_occ_threshold).any())
+
+    def near_sides(self, heading_deg: float | None) -> dict:
+        """Ближайшее препятствие слева и справа рядом с человеком — по карте, в том числе то, что уже
+        вышло из кадра (проходишь мимо стула — он сбоку, камера его не видит). Расстояние в метрах
+        или None. Для тихого сигнала в соответствующее ухо при обходе."""
+        out: dict[str, float | None] = {"left": None, "right": None}
+        if heading_deg is None:
+            return out
+        s = self.s
+        occ, corner = self._window(self.res)
+        ys, xs = np.nonzero(occ)
+        if not len(xs):
+            return out
+        w = corner + (np.stack([xs, ys], axis=1) + 0.5) * self.res
+        u = self.to_user(w, heading_deg)
+        box = ((np.abs(u[:, 0]) >= s.side_min_m) & (np.abs(u[:, 0]) <= s.side_max_m)
+               & (u[:, 1] >= -s.side_behind_m) & (u[:, 1] <= s.side_ahead_m))
+        for side, sel in (("left", box & (u[:, 0] < 0)), ("right", box & (u[:, 0] > 0))):
+            if sel.any():
+                out[side] = round(float(np.min(np.hypot(u[sel, 0], np.maximum(u[sel, 1], 0)))), 2)
+        return out
+
     def side_at(self, heading_deg: float | None, forward_m: float) -> str | None:
         """С какой стороны маршрут проходит препятствие на расстоянии forward_m впереди:
         "left" / "right" — смещение маршрута там, где препятствие; None — маршрута нет или он прямой."""

@@ -82,6 +82,7 @@ class FrameDebug:
     lanes: tuple[list[float], list[str]] | None = None  # (сдвиги полос, free/blocked/unseen) — для отладки
     map_view: dict | None = None  # карта для экрана (если клиент её просит)
     path_bearing: float | None = None  # куда ведёт маршрут по курсу, градусы от оси камеры
+    near_sides: dict | None = None  # ближайшее препятствие слева / справа рядом (по карте), м
     timings_ms: dict[str, float] = field(default_factory=dict)
 
 

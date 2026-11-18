@@ -32,12 +32,12 @@ import { courseText } from "../sensors/course";
 const DANGER_COOLDOWN_MS = 5000; // по тому же объекту
 const DANGER_GAP_MS = 3000; // между любыми тревогами
 const SAME_PRIMARY_MS = 6000; // та же главная опасность вернулась — не повторяем сразу
-const STATIC_ANNOUNCE_M = 5; // неподвижное — говорим с этого расстояния
+const STATIC_ANNOUNCE_M = 6; // неподвижное на пути — говорим с этого расстояния (жёлтая рамка)
+const APPROACH_BANDS_M = [4, 3, 2]; // дальше по мере подхода — только метры: "4 meters" (с 4 м рамка красная)
 const DYNAMIC_ANNOUNCE_M = 10; // люди, животные (и транспорт на пути) — заранее
 const PRIMARY_GAP_MS = 4000; // новое препятствие на пути объявляем не чаще
 const URGENT_M = 2.5; // ...а близкое —
 const URGENT_GAP_MS = 1500; // не чаще этого
-const NEAR_M = 2; // то же препятствие стало ближе — короткое уточнение
 const INTERRUPT_M = 3; // новая главная опасность ближе — перебивает обычную фразу
 const NOTICE_REPEAT_MS = 20000; // тот же человек/машина — не чаще
 const CROWD_REPEAT_MS = 20000;
@@ -155,7 +155,9 @@ export class AnnouncerLogic {
   private courseWasOff = false;
   private scan: Scan | null = null;
   private saidDist = new Map<string, number>(); // на каком расстоянии объявили препятствие
-  private nearSaid: string | null = null; // для какого препятствия уже было уточнение вблизи
+  private bandSaid = new Map<string, number>(); // какой порог подхода уже прозвучал для препятствия
+  // Что сейчас советует голос (для экрана: показываем ровно то, что прозвучало)
+  advice: { text: string; at: number } | null = null;
   private settledSince: number | null = null; // стоит и не поворачивается — с этого момента
   private standHeading: number | null = null; // куда смотрел, пока стоял неподвижно
   private standBlocked = false; // стоял перед препятствием на пути
@@ -172,7 +174,8 @@ export class AnnouncerLogic {
     this.standHeading = null;
     this.standBlocked = false;
     this.saidDist.clear();
-    this.nearSaid = null;
+    this.bandSaid.clear();
+    this.advice = null;
     this.primaryPhraseAt = -Infinity;
     this.guide = { bypass: null, at: -Infinity };
     this.tiltKind = null;
@@ -274,11 +277,24 @@ export class AnnouncerLogic {
     }
 
     // Уточнение вблизи: о препятствии сказали издалека ("5 meters") — на 2 м коротко напомнить
-    if (p && quiet && !standing && !turning && p.in_path && !p.moving && keyOf(p) === this.primaryKey && p.distance <= NEAR_M
-        && this.nearSaid !== keyOf(p) && (this.saidDist.get(keyOf(p)) ?? 0) > NEAR_M + 0.7) {
-      this.nearSaid = keyOf(p);
-      this.primaryPhraseAt = now;
-      return this.say(`${classLabel(p.cls)}, ${dist(p)}`, false, now, false, true);
+    // Подход к тому же препятствию: прошли порог 4 / 3 / 2 м — коротко, только метры
+    if (p && quiet && !standing && !turning && p.in_path && !p.moving && keyOf(p) === this.primaryKey) {
+      const k = keyOf(p);
+      const said = this.bandSaid.get(k) ?? this.saidDist.get(k) ?? Infinity;
+      const band = APPROACH_BANDS_M.find((b) => p.distance <= b && b < said - 0.4);
+      if (band != null) {
+        // запоминаем произнесённое расстояние: следующий порог — только если он заметно ближе
+        this.bandSaid.set(k, spokenDistance(p));
+        this.primaryPhraseAt = now;
+        // Фактическое расстояние на момент речи (а не номер порога: фраза могла чуть задержаться)
+        // и, если ещё не звучала, сторона обхода — в той же фразе, чтобы отсчёт её не перебивал
+        let side = "";
+        if ((bypass === "left" || bypass === "right") && (this.guide.key !== k || this.guide.bypass !== bypass)) {
+          this.guide = { bypass, at: now, key: k };
+          side = `. ${passText(bypass)}`;
+        }
+        return this.say(`${dist(p)}${side}`, false, now, false, true);
+      }
     }
 
     if (!quiet) return null;
@@ -497,6 +513,7 @@ export class AnnouncerLogic {
   private say(text: string, danger: boolean, now: number, interrupt = false, primary = false): Utterance | null {
     if (!danger && text === this.lastText.text && now - this.lastText.at < 3000) return null;
     this.lastText = { text, at: now };
+    if (/Pass (left|right)|No way around|Clear,|No way through/.test(text)) this.advice = { text, at: now };
     this.lastWasDanger = danger;
     this.lastWasPrimary = primary;
     return { text, danger, interrupt };
@@ -516,6 +533,11 @@ class Announcer {
   /** Идёт осмотр (человек поворачивает телефон в поисках прохода). */
   get scanning() {
     return this.enabled && this.logic.scanning;
+  }
+
+  /** Последний совет обхода, который прозвучал (для экрана). */
+  get advice() {
+    return this.logic.advice;
   }
 
   /** Вызывать из обработчика нажатия (мобильные браузеры требуют жест для первой речи). */

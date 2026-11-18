@@ -227,7 +227,11 @@ class Session:
             [o.approach_mps for o in objects if o.kind in ("obstacle", "vehicle") and o.motion_valid],
         )
         # Главная опасность: коридор движения + то, что едет на пользователя
-        self.threats.assess(objects, ego, focal, t_frame)
+        # Препятствие уже есть на карте (видели раньше, например сбоку) — угроза без повторной проверки
+        def known(o: TrackedObject) -> bool:
+            return self.map.known(math.copysign(o.lateral_m, o.bearing_deg), o.forward_m, self.heading_deg)
+
+        self.threats.assess(objects, ego, focal, t_frame, known)
         # Толпа / парковка / слишком темно
         groups, hints = self.context.update(objects, gray, t_frame)
         # Запоминаем подтверждённое препятствие на пути (для удержания при мигании)
@@ -353,6 +357,7 @@ class Session:
                 for o in objects if o.forward_m < self.s.map_view_m / 2
             ] + [("obstacle", e[1], e[3], e[2]) for e in extras if e[2] < self.s.map_view_m / 2]) if self.want_map else None,
             path_bearing=None if path_bearing is None else round(path_bearing, 1),
+            near_sides=self.map.near_sides(self.heading_deg),
             timings_ms={
                 "detect": (t1 - t0) * 1000,
                 "depth": (t2 - t1) * 1000,

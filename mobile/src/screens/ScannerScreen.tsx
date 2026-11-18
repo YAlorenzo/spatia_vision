@@ -33,7 +33,7 @@ const STATUS_DOT: Record<StreamStatus, string> = {
 const GAIT_TEXT = { walking: "Walking", standing: "Standing", turning: "Turning" } as const;
 
 // С какого расстояния голос говорит о неподвижном препятствии на пути (как в announcer.ts)
-const STATIC_ANNOUNCE_M = 5;
+const ADVICE_SHOW_MS = 6000; // совет обхода на экране — столько после того, как прозвучал
 
 interface ScannerScreenProps {
   onStop: () => void;
@@ -53,7 +53,7 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
     return () => setWantMap(false);
   }, [showMap]);
 
-  const { status, obstacles, groups, hints, bypass, map, serverOutdated, stats, frameSize, error } = useServerStream({
+  const { status, obstacles, groups, hints, bypass, map, near, serverOutdated, stats, frameSize, error } = useServerStream({
     url,
     cameraRef,
     cameraReady,
@@ -64,7 +64,7 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
   useEffect(() => setLabelScene(scene), [scene]);
 
   const active = status === "streaming";
-  useAudioFeedback({ obstacles, groups, hints, bypass, active, beeps, speech });
+  useAudioFeedback({ obstacles, groups, hints, bypass, near, active, beeps, speech });
   const tilt = useTiltAdvice(active);
   const connectionLost = useConnectionWatchdog(obstacles, speech);
 
@@ -77,11 +77,14 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
   const [courseDev, setCourseDev] = useState<number | null>(null);
   // Что телефон думает о человеке — видно на экране, чтобы проверить определение вживую
   const [gait, setGait] = useState<ReturnType<typeof motionLabel>>("unknown");
+  const [advice, setAdvice] = useState<string | null>(null); // последний совет обхода, который прозвучал
   useEffect(() => {
     const id = setInterval(() => {
       const now = Date.now();
       setCourseDev(course.deviation(now));
       setGait(motionLabel(now));
+      const adv = announcer.advice;
+      setAdvice(adv && now - adv.at < ADVICE_SHOW_MS ? adv.text : null);
     }, 300);
     return () => clearInterval(id);
   }, []);
@@ -101,16 +104,8 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
     ...(serverOutdated ? ["Server outdated — restart it"] : []),
     ...(connectionLost ? ["No connection — stop"] : []),
     ...(courseDev != null ? [Math.abs(courseDev) < 12 ? "On course" : courseText(courseDev)] : []),
-    // Совет обхода показываем там же, где голос его говорит: неподвижное препятствие на пути ближе 5 м
-    ...(primary && primary.in_path && !primary.moving && primary.distance <= STATIC_ANNOUNCE_M
-      ? bypass === "left"
-        ? ["Pass on the left"]
-        : bypass === "right"
-          ? ["Pass on the right"]
-          : bypass === "none"
-            ? ["No way around in view"]
-            : []
-      : []),
+    // Совет обхода — ровно тот, что прозвучал голосом (экран и голос не расходятся)
+    ...(advice ? [advice] : []),
     ...(hints.includes("too_dark") ? ["Too dark — stop"] : []),
     ...(hints.includes("blurry") ? ["Blurry image — stop"] : []),
     ...groups

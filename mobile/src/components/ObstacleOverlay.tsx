@@ -52,8 +52,8 @@ export const ObstacleOverlay = ({ obstacles, frameSize }: Props) => {
                 width: (x2 - x1) * fw,
                 height: (y2 - y1) * fh,
                 borderColor: color,
-                borderWidth: o.primary ? 4 : idle ? 1 : 2,
-                opacity: idle ? 0.35 : 1,
+                borderWidth: o.primary ? 4 : idle ? 1.5 : 2,
+                opacity: idle ? 0.65 : 1,
                 // препятствия по глубине (без класса) — пунктиром и с заливкой
                 borderStyle: o.kind === "obstacle" ? "dashed" : "solid",
                 backgroundColor: o.kind === "obstacle" && !idle ? `${color}22` : "transparent",
