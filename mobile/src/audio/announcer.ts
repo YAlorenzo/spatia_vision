@@ -1,7 +1,7 @@
 import { Platform } from "react-native";
 import type { Bypass, Group, Hint, Obstacle } from "../api/protocol";
 import type { TiltAdvice } from "../sensors/cameraTilt";
-import { classLabel, groupText, meters, spokenDistance, where } from "../components/labels";
+import { classLabel, groupText, meters, spokenDistance } from "../components/labels";
 import { courseText } from "../sensors/course";
 
 /**
@@ -10,16 +10,16 @@ import { courseText } from "../sensors/course";
  * Главная задача — НЕ ПЕРЕГРУЖАТЬ: сигнал передаёт срочность, голос — что это, где и как далеко.
  * В каждой фразе об объекте есть расстояние.
  *
- *   1. "Warning! Car on the left, 6 meters" — что-то едет/бежит на тебя. Перебивает речь.
+ *   1. "Warning! Car, 6 meters left" — что-то едет/бежит на тебя. Перебивает речь.
  *   2. Препятствие НА ПУТИ: неподвижное — с 5 м, человек/транспорт/животное — с 10 м.
- *      "Chair ahead, 3 meters. Pass on the left". Не чаще раза в 5 с.
- *   3. Сторона обхода появилась или сменилась: "Chair, 2 meters. Pass on the right".
+ *      "Chair, 3 meters. Pass left" (на пути — без слова "ahead"). Не чаще раза в 5 с.
+ *   3. Сторона обхода появилась или сменилась: "Chair, 2 meters. Pass right".
  *   4. Камера плохо видит: "Raise the phone", "Stop. Too dark…".
  *   5. Курс: "Turn left 40 degrees", "On course".
  *   6. Заранее о живом и движущемся (не чаще фразы в 3 с):
- *      люди и животные — с 10 м: "Person on the right, 8 meters", "Person approaching ahead, 9 meters";
- *      группа людей — одной фразой: "Group of people on the left, 9 meters";
- *      едущий транспорт — как только сервер его заметил (до 20 м): "Car moving on the left, 15 meters";
+ *      люди и животные — с 10 м: "Person, 8 meters right", "Person approaching, 9 meters";
+ *      группа людей — одной фразой: "Group of people, 9 meters left";
+ *      едущий транспорт — как только сервер его заметил (до 20 м): "Car moving, 15 meters left";
  *      стоящий транспорт — с 5 м; на парковке — "Caution, parking area" вместо каждой машины.
  *
  * РЕЖИМ ОСМОТРА. Камера телефона видит узко, поэтому часто прохода в кадре нет — голос просит
@@ -107,14 +107,15 @@ const dist = (o: Obstacle) => meters(spokenDistance(o));
 /** С какого расстояния говорим об объекте. */
 const announceRange = (o: Obstacle) => (o.kind === "obstacle" ? STATIC_ANNOUNCE_M : DYNAMIC_ANNOUNCE_M);
 
-const whereShort = (o: Obstacle) => (o.in_path ? "ahead" : o.bearing < 0 ? "left" : "right");
+// Прямо по курсу — без слова: по умолчанию всё, о чём говорим, впереди. Сторону называем, только если сбоку.
+const sideWord = (o: Obstacle) => (o.in_path ? "" : o.bearing < 0 ? " left" : " right");
 
-/** "Person approaching, 8 meters ahead" / "Car moving on the left, 15 meters" / "Person on the right, 6 meters". */
+/** "Person approaching, 8 meters" / "Car moving, 15 meters left" / "Person, 6 meters right". */
 function noticeText(o: Obstacle): string {
   const state = o.moving
     ? o.kind === "vehicle" ? " moving" : " running"
     : o.kind !== "vehicle" && o.own_speed > 0.5 ? " approaching" : "";
-  return `${classLabel(o.cls)}${state}, ${dist(o)} ${whereShort(o)}`;
+  return `${classLabel(o.cls)}${state}, ${dist(o)}${sideWord(o)}`;
 }
 
 interface Scan {
@@ -198,7 +199,7 @@ export class AnnouncerLogic {
         this.dangerAt.set(k, now);
         this.lastDangerAt = now;
         this.noticeAt.set(k, now); // не повторять тем же как обычное оповещение
-        return this.say(`Warning! ${classLabel(danger.cls)} ${where(danger)}, ${dist(danger)}`, true, now);
+        return this.say(`Warning! ${classLabel(danger.cls)}, ${dist(danger)}${sideWord(danger)}`, true, now);
       }
     }
 

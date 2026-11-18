@@ -69,15 +69,13 @@ export function meters(d: number): string {
   return `${Math.round(d)} meters`;
 }
 
-/** Где объект относительно пользователя: в коридоре движения — "ahead". */
-export const where = (o: Obstacle) => (o.in_path ? "ahead" : o.bearing < 0 ? "on the left" : "on the right");
 
 /** Буква стороны для рамки на экране: L / C / R (голосом не произносится). */
 export const zoneLetter = (o: Obstacle) => (o.in_path || o.zone === "center" ? "C" : o.bearing < 0 ? "L" : "R");
 
-/** Короткая фраза для экрана: "Chair ahead, 3 meters". */
+/** Короткая фраза для экрана: "Chair, 3 meters" (на пути — без слова), "Person, 6 meters left". */
 export function describe(o: Obstacle): string {
-  return `${classLabel(o.cls)}${o.moving ? " moving" : ""} ${where(o)}, ${meters(o.distance)}`;
+  return `${classLabel(o.cls)}${o.moving ? " moving" : ""}, ${meters(o.distance)}${o.in_path ? "" : o.bearing < 0 ? " left" : " right"}`;
 }
 
 /**
@@ -100,17 +98,15 @@ export function boxColor(o: Obstacle): string {
   return level === "threat" ? URGENCY_COLOR[o.urgency] : level === "watch" ? "#fb923c" : "#9ca3af";
 }
 
-const ZONE_EN: Record<Zone, string> = { left: "on the left", center: "ahead", right: "on the right" };
-
-/** ["left","center"] -> "on the left and ahead" */
+/** Стороны группы без "впереди" (по умолчанию всё впереди): ["left","center"] -> "left", ["left","right"] -> "left and right". */
 export function zonesText(zones: Zone[]): string {
-  const words = zones.map((z) => ZONE_EN[z]);
-  return words.length <= 1 ? (words[0] ?? "") : `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`;
+  return zones.filter((z) => z !== "center").join(" and ");
 }
 
 /** Фраза об обстановке. */
 export function groupText(g: Group): string {
-  if (g.type === "crowd") return `Group of people ${zonesText(g.zones)}, ${meters(g.distance)}`;
-  if (g.type === "cluster") return `Many objects ${zonesText(g.zones)}`;
+  const side = zonesText(g.zones);
+  if (g.type === "crowd") return `Group of people, ${meters(g.distance)}${side ? ` ${side}` : ""}`;
+  if (g.type === "cluster") return `Many objects${side ? ` ${side}` : ""}`;
   return "Caution, parking area";
 }
