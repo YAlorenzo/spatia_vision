@@ -21,6 +21,16 @@ export type Hint = "too_dark" | "blurry";
 /** С какой стороны обойти главную опасность; none — прохода в кадре не видно. */
 export type Bypass = "left" | "right" | "none";
 
+/** Карта местности (вид сверху): метры относительно человека, оси мира (x — "восток", y — "север" компаса). */
+export interface MapView {
+  cell: number; // размер клетки, м
+  occ: number[]; // занятые клетки: [x0, y0, x1, y1, ...] в клетках
+  path: [number, number][] | null; // маршрут по курсу, м
+  people: [number, number][]; // люди / транспорт сейчас, м
+  heading: number | null; // куда смотрит камера по компасу, градусы
+  course: number | null; // курс по компасу, градусы
+}
+
 /** Обстановка: толпа людей или парковка — одним сообщением вместо каждого объекта. */
 export interface Group {
   type: GroupType;
@@ -72,12 +82,13 @@ export interface ConfigMessage {
  */
 export interface PoseMessage {
   type: "pose";
-  up: [number, number, number];
+  up: [number, number, number] | null; // null — нет датчика ориентации
   /** Курс относительно камеры, градусы (> 0 правее): сервер выбирает сторону обхода ближе к нему. */
   course?: number | null;
   /** Для записи сессии: что делает человек и куда смотрит камера (компас, градусы). */
   motion?: "walking" | "standing" | "turning" | "unknown";
   heading?: number | null;
+  map?: boolean; // прислать карту местности
 }
 
 // сервер -> клиент
@@ -95,6 +106,8 @@ export interface ResultMessage {
   groups?: Group[];
   hints?: Hint[];
   bypass?: Bypass | null;
+  map?: MapView | null;
+  path_bearing?: number | null;
   server_ms: number;
   dropped: number;
 }

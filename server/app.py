@@ -117,6 +117,8 @@ async def process_loop(ws: WebSocket, session: Session, slot: FrameSlot) -> None
             groups=dbg.groups,
             hints=dbg.hints,
             bypass=dbg.bypass,
+            map=dbg.map_view,
+            path_bearing=dbg.path_bearing,
             server_ms=round((loop.time() - t0) * 1000, 1),
             dropped=slot.dropped,
         ))
@@ -174,10 +176,15 @@ async def websocket_endpoint(ws: WebSocket):
                     try:
                         pose = Pose.model_validate_json(msg["text"])
                         session.course_deg = pose.course
+                        session.heading_deg = pose.heading
+                        session.want_map = pose.map
                         pose_meta = {"motion": pose.motion, "heading": pose.heading, "course": pose.course}
-                        v = np.array(pose.up, dtype=np.float64)
-                        n = np.linalg.norm(v)
-                        pose_up = v / n if 0.5 < n < 1.5 else None  # мусор — игнорируем
+                        if pose.up is None:
+                            pose_up = None
+                        else:
+                            v = np.array(pose.up, dtype=np.float64)
+                            n = np.linalg.norm(v)
+                            pose_up = v / n if 0.5 < n < 1.5 else None  # мусор — игнорируем
                     except ValidationError:
                         pose_up = None
                     continue

@@ -4,7 +4,8 @@ import { CameraView } from "expo-camera";
 import { cssInterop } from "nativewind";
 import type { Scene } from "../api/protocol";
 import { getServerUrl } from "../api/serverUrl";
-import { StreamStatus, useServerStream } from "../api/useServerStream";
+import { setWantMap, StreamStatus, useServerStream } from "../api/useServerStream";
+import { MapPanel } from "../components/MapPanel";
 import { ObstacleOverlay } from "../components/ObstacleOverlay";
 import { useAudioFeedback, useConnectionWatchdog, useTiltAdvice } from "../audio/useAudioFeedback";
 import { announcer } from "../audio/announcer";
@@ -45,8 +46,14 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
   const [beeps, setBeeps] = useState(true);
   const [speech, setSpeech] = useState(true);
   const url = useMemo(() => getServerUrl(), []);
+  // Экран "карта": камера и звук продолжают работать под ним, иначе карта не обновлялась бы
+  const [showMap, setShowMap] = useState(false);
+  useEffect(() => {
+    setWantMap(showMap);
+    return () => setWantMap(false);
+  }, [showMap]);
 
-  const { status, obstacles, groups, hints, bypass, stats, frameSize, error } = useServerStream({
+  const { status, obstacles, groups, hints, bypass, map, stats, frameSize, error } = useServerStream({
     url,
     cameraRef,
     cameraReady,
@@ -171,6 +178,15 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
           </View>
         </View>
 
+        <TouchableOpacity
+          className="self-start rounded-2xl bg-black/60 px-4 py-1.5"
+          onPress={() => setShowMap(true)}
+          accessibilityRole="button"
+          accessibilityLabel="Open the map: top view of obstacles and the route"
+        >
+          <Text className="text-white font-semibold">Map</Text>
+        </TouchableOpacity>
+
         {notices.length > 0 && (
           <View className="flex-row flex-wrap gap-2">
             {notices.map((n) => (
@@ -227,6 +243,8 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
           <Text className={`text-white ${landscape ? "text-lg" : "text-2xl"} font-black uppercase text-center`}>Stop</Text>
         </TouchableOpacity>
       </View>
+
+      {showMap && <MapPanel map={map} onClose={() => setShowMap(false)} />}
     </View>
   );
 };

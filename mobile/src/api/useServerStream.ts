@@ -11,6 +11,7 @@ import {
   HelloMessage,
   Hint,
   Bypass,
+  MapView,
   Obstacle,
   PoseMessage,
   PROTOCOL_VERSION,
@@ -54,10 +55,17 @@ export interface SceneState {
   groups: Group[];
   hints: Hint[];
   bypass: Bypass | null;
+  map: MapView | null;
 }
 
 const EMPTY_STATS: StreamStats = { fps: 0, rttMs: 0, serverMs: 0, frameKb: 0 };
-const EMPTY_SCENE: SceneState = { obstacles: [], groups: [], hints: [], bypass: null };
+const EMPTY_SCENE: SceneState = { obstacles: [], groups: [], hints: [], bypass: null, map: null };
+
+// Экран "карта" открыт — просим сервер присылать карту (иначе не гоняем лишние данные)
+let wantMap = false;
+export const setWantMap = (on: boolean) => {
+  wantMap = on;
+};
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const ema = (prev: number, next: number) => (prev ? prev * 0.8 + next * 0.2 : next);
 
@@ -164,18 +172,20 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
         const sentAt = Date.now();
         const reply = waitReply(seq);
         // Ориентация телефона для этого кадра — сервер учтёт наклон и завал вбок
+        // Шлём, даже если датчика ориентации нет: в pose ещё и просьба прислать карту
         const up = cameraTilt.upVector(Date.now());
-        if (up) {
+        {
           const dev = course.deviation(Date.now());
           const pose: PoseMessage = {
             type: "pose",
-            up: up.map((v) => Math.round(v * 1000) / 1000) as Vec3,
+            up: up ? (up.map((v) => Math.round(v * 1000) / 1000) as Vec3) : null,
             course: dev == null ? null : Math.round(dev),
             motion: motionLabel(Date.now()),
             heading: (() => {
               const hd = cameraTilt.heading(Date.now());
               return hd == null ? null : Math.round(hd);
             })(),
+            map: wantMap,
           };
           ws.send(JSON.stringify(pose));
         }
@@ -197,6 +207,7 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
           groups: result.groups ?? [],
           hints: result.hints ?? [],
           bypass: result.bypass ?? null,
+          map: result.map ?? null,
         });
         setStats(s);
       }
@@ -267,6 +278,7 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
     groups: sceneState.groups,
     hints: sceneState.hints,
     bypass: sceneState.bypass,
+    map: sceneState.map,
     stats,
     frameSize,
     error,
