@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Text, TouchableOpacity, View } from "react-native";
+import { Text, TouchableOpacity, useWindowDimensions, View } from "react-native";
 import { CameraView } from "expo-camera";
 import { cssInterop } from "nativewind";
 import type { Scene } from "../api/protocol";
 import { getServerUrl } from "../api/serverUrl";
-import { StreamStatus, useServerStream } from "../api/useServerStream";
+import { setWantMap, StreamStatus, useServerStream } from "../api/useServerStream";
+import { MapPanel } from "../components/MapPanel";
 import { ObstacleOverlay } from "../components/ObstacleOverlay";
 import { useAudioFeedback, useConnectionWatchdog, useTiltAdvice } from "../audio/useAudioFeedback";
 import { announcer } from "../audio/announcer";
 import { course, courseText } from "../sensors/course";
+import { motionLabel } from "../sensors/motion";
 import { describe, setLabelScene, URGENCY_COLOR, zonesText } from "../components/labels";
 
 // CameraView — сторонний компонент, NativeWind должен знать, что className -> style
@@ -28,8 +30,10 @@ const STATUS_DOT: Record<StreamStatus, string> = {
   stopped: "bg-zinc-500",
 };
 
+const GAIT_TEXT = { walking: "Walking", standing: "Standing", turning: "Turning" } as const;
+
 // С какого расстояния голос говорит о неподвижном препятствии на пути (как в announcer.ts)
-const STATIC_ANNOUNCE_M = 5;
+const ADVICE_SHOW_MS = 6000; // совет обхода на экране — столько после того, как прозвучал
 
 interface ScannerScreenProps {
   onStop: () => void;
@@ -41,10 +45,15 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
   const [scene, setScene] = useState<Scene>("indoor"); // по умолчанию — помещение; на улице переключить
   const [beeps, setBeeps] = useState(true);
   const [speech, setSpeech] = useState(true);
-  const [vibration, setVibration] = useState(true);
   const url = useMemo(() => getServerUrl(), []);
+  // Экран "карта": камера и звук продолжают работать под ним, иначе карта не обновлялась бы
+  const [showMap, setShowMap] = useState(false);
+  useEffect(() => {
+    setWantMap(showMap);
+    return () => setWantMap(false);
+  }, [showMap]);
 
-  const { status, obstacles, groups, hints, bypass, stats, frameSize, error } = useServerStream({
+  const { status, obstacles, groups, hints, bypass, map, near, front, serverOutdated, stats, frameSize, error } = useServerStream({
     url,
     cameraRef,
     cameraReady,
@@ -55,16 +64,28 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
   useEffect(() => setLabelScene(scene), [scene]);
 
   const active = status === "streaming";
-  useAudioFeedback({ obstacles, groups, hints, bypass, active, beeps, speech, vibration });
+  useAudioFeedback({ obstacles, groups, hints, bypass, near, front, active, beeps, speech });
   const tilt = useTiltAdvice(active);
   const connectionLost = useConnectionWatchdog(obstacles, speech);
 
   const primary = obstacles.find((o) => o.primary);
+  // Телефон горизонтально (камера видит шире): панели компактнее, чтобы не закрывать картинку
+  const { width, height } = useWindowDimensions();
+  const landscape = width > height;
 
   // --- Курс: направление, куда человек хочет идти ---
   const [courseDev, setCourseDev] = useState<number | null>(null);
+  // Что телефон думает о человеке — видно на экране, чтобы проверить определение вживую
+  const [gait, setGait] = useState<ReturnType<typeof motionLabel>>("unknown");
+  const [advice, setAdvice] = useState<string | null>(null); // последний совет обхода, который прозвучал
   useEffect(() => {
-    const id = setInterval(() => setCourseDev(course.deviation(Date.now())), 400);
+    const id = setInterval(() => {
+      const now = Date.now();
+      setCourseDev(course.deviation(now));
+      setGait(motionLabel(now));
+      const adv = announcer.advice;
+      setAdvice(adv && now - adv.at < ADVICE_SHOW_MS ? adv.text : null);
+    }, 300);
     return () => clearInterval(id);
   }, []);
   useEffect(() => () => course.clear(), []);
@@ -80,18 +101,11 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
 
   const otherThreats = obstacles.filter((o) => o.threat && !o.primary).length;
   const notices = [
+    ...(serverOutdated ? ["Server outdated — restart it"] : []),
     ...(connectionLost ? ["No connection — stop"] : []),
     ...(courseDev != null ? [Math.abs(courseDev) < 12 ? "On course" : courseText(courseDev)] : []),
-    // Совет обхода показываем там же, где голос его говорит: неподвижное препятствие на пути ближе 5 м
-    ...(primary && primary.in_path && !primary.moving && primary.distance <= STATIC_ANNOUNCE_M
-      ? bypass === "left"
-        ? ["Pass on the left"]
-        : bypass === "right"
-          ? ["Pass on the right"]
-          : bypass === "none"
-            ? ["No way around in view"]
-            : []
-      : []),
+    // Совет обхода — ровно тот, что прозвучал голосом (экран и голос не расходятся)
+    ...(advice ? [advice] : []),
     ...(hints.includes("too_dark") ? ["Too dark — stop"] : []),
     ...(hints.includes("blurry") ? ["Blurry image — stop"] : []),
     ...groups
@@ -117,6 +131,9 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
           <View className="flex-row items-center gap-2">
             <View className={`h-3 w-3 rounded-full ${STATUS_DOT[status]}`} />
             <Text className="text-white font-semibold">{STATUS_TEXT[status]}</Text>
+            {gait !== "unknown" && (
+              <Text className="rounded-lg bg-white/15 px-2 text-xs font-bold text-white">{GAIT_TEXT[gait]}</Text>
+            )}
           </View>
           {status === "streaming" && (
             <Text className="text-zinc-300 text-xs">
@@ -143,7 +160,6 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
             {[
               { label: "Beeps", on: beeps, toggle: () => setBeeps((v) => !v) },
               { label: "Voice", on: speech, toggle: () => setSpeech((v) => !v) },
-              { label: "Vibration", on: vibration, toggle: () => setVibration((v) => !v) },
             ].map((t) => (
               <TouchableOpacity
                 key={t.label}
@@ -157,6 +173,15 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
             ))}
           </View>
         </View>
+
+        <TouchableOpacity
+          className="self-start rounded-2xl bg-black/60 px-4 py-1.5"
+          onPress={() => setShowMap(true)}
+          accessibilityRole="button"
+          accessibilityLabel="Open the map: top view of obstacles and the route"
+        >
+          <Text className="text-white font-semibold">Map</Text>
+        </TouchableOpacity>
 
         {notices.length > 0 && (
           <View className="flex-row flex-wrap gap-2">
@@ -174,10 +199,10 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
       </View>
 
       {/* Курс, главная опасность, стоп */}
-      <View className="absolute bottom-10 w-full items-center gap-4 px-6">
+      <View className={landscape ? "absolute bottom-3 w-full flex-row items-stretch gap-3 px-4" : "absolute bottom-10 w-full items-center gap-4 px-6"}>
         {/* Большая кнопка, чтобы попасть не глядя: нажатие — запомнить курс, долгое — сбросить */}
         <TouchableOpacity
-          className={`w-full rounded-3xl py-4 items-center ${courseDev != null ? "bg-emerald-600" : "bg-blue-600"}`}
+          className={`${landscape ? "flex-1 py-3 justify-center" : "w-full py-4"} rounded-3xl items-center ${courseDev != null ? "bg-emerald-600" : "bg-blue-600"}`}
           onPress={setCourse}
           onLongPress={clearCourse}
           accessibilityRole="button"
@@ -189,16 +214,16 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
         </TouchableOpacity>
 
         <View
-          className="w-full rounded-3xl bg-black/70 px-5 py-4"
+          className={landscape ? "flex-[2] rounded-3xl bg-black/70 px-4 py-2 justify-center" : "w-full rounded-3xl bg-black/70 px-5 py-4"}
           accessibilityLiveRegion="polite"
           accessible
         >
           {primary ? (
-            <Text className="text-2xl font-black text-center" style={{ color: URGENCY_COLOR[primary.urgency] }}>
+            <Text className={`${landscape ? "text-lg" : "text-2xl"} font-black text-center`} style={{ color: URGENCY_COLOR[primary.urgency] }}>
               {describe(primary)}
             </Text>
           ) : (
-            <Text className="text-zinc-300 text-xl font-bold text-center">
+            <Text className={`text-zinc-300 ${landscape ? "text-base" : "text-xl"} font-bold text-center`}>
               {status === "streaming" ? "Path clear" : "Waiting for server"}
             </Text>
           )}
@@ -208,12 +233,14 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
         </View>
 
         <TouchableOpacity
-          className="bg-red-500 py-5 w-4/5 rounded-3xl items-center active:bg-red-600"
+          className={`bg-red-500 rounded-3xl items-center active:bg-red-600 ${landscape ? "flex-1 py-3 justify-center" : "py-5 w-4/5"}`}
           onPress={onStop}
         >
-          <Text className="text-white text-2xl font-black uppercase text-center">Stop</Text>
+          <Text className={`text-white ${landscape ? "text-lg" : "text-2xl"} font-black uppercase text-center`}>Stop</Text>
         </TouchableOpacity>
       </View>
+
+      {showMap && <MapPanel map={map} onClose={() => setShowMap(false)} />}
     </View>
   );
 };

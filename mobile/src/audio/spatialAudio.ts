@@ -2,36 +2,54 @@ import { Platform } from "react-native";
 import type { Obstacle } from "../api/protocol";
 
 /**
- * Пространственный звук: ОДНА главная опасность, всё остальное молчит.
+ * Звук — ПАРКТРОНИК, привязанный к камере.
  *
- * Главную опасность выбирает сервер (поле primary): то, во что врежешься, если идти
- * прямо, или то, что едет на тебя. О ней — громкий сигнал "как парктроник":
- *   - чем меньше время до столкновения, тем чаще сигнал; вплотную — непрерывный тон ("стоп");
- *   - звук идёт с той стороны, где опасность (HRTF, лучше всего в наушниках);
- *   - тембр: препятствие — ровный тон, человек — выше, транспорт — резкий.
- * Отдельно — тревога для того, что ЕДЕТ на тебя, если оно не главная опасность.
- * Частоты 900–1800 Гц: динамик телефона плохо воспроизводит низкие, они звучат тихо.
- * Работает в вебе (Web Audio API).
+ * Сервер в каждом кадре мерит расстояние до ближайшего, что прямо перед камерой (полоса шириной
+ * с человека), без подтверждений и выбора "главной угрозы" (поле front). Писк зависит только от него:
+ * чем ближе — тем чаще, плавно (6 м — 0.92 с, 4 м — 0.58, 3 м — 0.39, 2 м — 0.21, 1.2 м — 0.08),
+ * ближе 0.9 м — один непрерывный писк. Кадр без данных — держим последнее расстояние 0.5 с.
+ * Писк не замолкает, когда человек стоит или говорит голос (под голосом — тише).
+ *
+ * СТОРОНА — стерео: писк в том ухе, где препятствие (угол растянут втрое: камера видит всего ±20°).
+ * ОБХОД — препятствие сбоку рядом (по карте, в том числе уже вне кадра) тихо тикает в своё ухо.
+ * Отдельно — тревога для того, что ЕДЕТ на тебя (двойной тон).
  */
 
 const STALE_MS = 1200; // давно нет данных от сервера — замолкаем
 const TICK_MS = 20;
-const SLOW_TTC_S = 7; // при таком времени до столкновения — самые редкие сигналы
-const SOLID_TTC_S = 0.9; // ближе — непрерывный тон
-const SOLID_DIST_M = 0.8;
+const HOLD_MS = 600; // главная опасность мигнула — держим сигнал
 const ALARM_INTERVAL_S = 0.9;
-// Камера вертикального телефона видит всего ±20°: без усиления всё звучит "по центру".
-// Угол на препятствие растягивается: 10° в кадре -> 30° в наушниках.
-const DIRECTION_GAIN = 3;
-const NEAR_PITCH_M = 3; // ближе — сигнал выше тоном (до +40%)
+const DIRECTION_GAIN = 3; // 10° в кадре -> 30° в наушниках
 const MASTER_GAIN = 1.25; // общая громкость сигналов
-const DUCK_GAIN = 0.15; // пока говорит голос — сигналы почти не слышны, слова важнее
-// "Спокойный режим": человек стоит перед препятствием — сигнал не выключается, но редкий и тихий
-const CALM_AFTER_MS = 2000; // столько не приближается — стоит
-const CALM_APPROACH_MPS = 0.2;
-const CALM_STEP_M = 0.3; // подошёл ближе на столько — идёт, сигнал сразу обычный
-const CALM_INTERVAL_S = 1.6;
-const CALM_LEVEL = 0.3;
+const DUCK_GAIN = 0.55; // пока говорит голос — писк тише, но не пропадает (иначе слышны одиночные пики)
+// ПАРКТРОНИК: расстояние до ближайшего прямо перед камерой (сервер, каждый кадр, поле front).
+// Интервал плавно сокращается с расстоянием; ближе SOLID_FRONT_M — один непрерывный писк.
+const FRONT_FAR_M = 6.0; // дальше — тишина
+const SOLID_FRONT_M = 0.9;
+const FRONT_HOLD_MS = 500; // кадр без данных — держим последнее расстояние, ритм не рвётся
+const FRONT_SMOOTH = 0.5; // сглаживание расстояния между кадрами (0..1, больше — быстрее)
+/** Интервал между писками по расстоянию: 6 м — 0.92 с, 4 м — 0.58, 3 м — 0.39, 2 м — 0.21, 1.2 м — 0.08. */
+export function frontInterval(d: number): number {
+  if (d <= SOLID_FRONT_M) return 0;
+  const t = Math.min(1, (d - SOLID_FRONT_M) / (FRONT_FAR_M - SOLID_FRONT_M));
+  return 0.07 + 0.85 * Math.pow(t, 1.3);
+}
+// Ступени: [до скольких метров, интервал с]; ближе SOLID_M — сплошной тон
+const SOLID_M = 1.0;
+const STEPS: [number, number][] = [
+  [1.5, 0.17],
+  [2.0, 0.26],
+  [2.5, 0.34],
+  [3.0, 0.44],
+  [3.5, 0.56],
+  [4.0, 0.7],
+  [6.0, 1.0],
+];
+const HYST_M = 0.15;
+// Обход: препятствие сбоку рядом
+const SIDE_FAR_M = 1.2;
+const SIDE_LEVEL = 0.35;
+const SIDE_FREQ = 1500;
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
@@ -42,36 +60,50 @@ const TONE: Record<Obstacle["kind"], { freq: number; type: OscillatorType }> = {
   vehicle: { freq: 800, type: "sawtooth" },
 };
 
-/** Интервал между сигналами (с) по времени до столкновения; 0 — непрерывный тон. */
+/** Номер ступени по расстоянию: 0 — сплошной тон, 1..STEPS.length, STEPS.length+1 — дальше 6 м (тишина). */
+function stepOf(d: number): number {
+  if (d <= SOLID_M) return 0;
+  const i = STEPS.findIndex(([max]) => d <= max);
+  return i < 0 ? STEPS.length + 1 : i + 1;
+}
+
+/** Интервал между сигналами (с) для препятствия; 0 — сплошной тон. Для вибрации/экрана. */
 export function beepInterval(o: Obstacle): number {
-  const ttc = o.ttc ?? SLOW_TTC_S;
-  if (ttc <= SOLID_TTC_S || o.distance <= SOLID_DIST_M) return 0;
-  // Квадратичная шкала: заметно учащается именно вблизи
-  const t = clamp((ttc - SOLID_TTC_S) / (SLOW_TTC_S - SOLID_TTC_S), 0, 1);
-  return 0.09 + 0.8 * t * t;
+  const s = stepOf(o.distance);
+  return s === 0 ? 0 : s > STEPS.length ? 1.0 : STEPS[s - 1][1];
 }
 
 class SpatialAudio {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
-  private panner: PannerNode | null = null; // главная опасность
-  private alarmPanner: PannerNode | null = null; // едущее на тебя (если не главное)
+  private pan: StereoPannerNode | null = null; // главная опасность
+  private alarmPan: StereoPannerNode | null = null; // едущее на тебя (если не главное)
+  private sidePan: StereoPannerNode | null = null; // препятствие сбоку при обходе
   private primary: Obstacle | null = null;
+  private front: { d: number; bearing: number } | null = null; // парктроник
+  private frontAt = 0;
+  private primaryAt = 0;
+  private primaryKey: string | null = null;
+  private step = STEPS.length + 1;
   private alarm: Obstacle | null = null;
+  private near: { left: number | null; right: number | null } = { left: null, right: null };
   private nextBeep = 0;
+  private lastBeep = 0;
   private nextAlarm = 0;
+  private nextSide = 0;
+  private sideTurn = 0; // по очереди левое / правое, если рядом с обеих сторон
   private solid: { osc: OscillatorNode; gain: GainNode } | null = null;
   private lastUpdate = 0;
   private timer: ReturnType<typeof setInterval> | null = null;
   private calmSince: number | null = null;
   private calmDist = 0;
-  /** Человек стоит перед препятствием: сигнал редкий и тихий, голос подсказывает обход. */
+  /** Человек стоит перед препятствием (по картинке): сигнал редкий и тихий. */
   calm = false;
-  /**
-   * Осмотр: человек стоит и поворачивает телефон в поисках прохода. Сигнал тихий: он не идёт
-   * на то, что попало в кадр. О свободном направлении говорит голос.
-   */
+  /** Осмотр: человек стоит и поворачивает телефон в поисках прохода — сигнал тихий. */
   scan = false;
+  /** Стоит (по акселерометру): сигнал о неподвижном препятствии редкий и тихий, не выключается. */
+  standing = false;
+  private wasStanding = false;
   enabled = true;
 
   get supported() {
@@ -92,58 +124,73 @@ class SpatialAudio {
     const master = ctx.createGain();
     master.gain.value = MASTER_GAIN;
     master.connect(comp).connect(ctx.destination);
-    const mkPanner = () => {
-      const p = new PannerNode(ctx, {
-        panningModel: "HRTF",
-        distanceModel: "linear",
-        rolloffFactor: 0, // громкость задаём сами
-        positionX: 0,
-        positionY: 0,
-        positionZ: -1,
-      });
+    const mkPan = () => {
+      const p = new StereoPannerNode(ctx, { pan: 0 });
       p.connect(master);
       return p;
     };
     this.ctx = ctx;
     this.master = master;
-    this.panner = mkPanner();
-    this.alarmPanner = mkPanner();
+    this.pan = mkPan();
+    this.alarmPan = mkPan();
+    this.sidePan = mkPan();
   }
 
-  private place(panner: PannerNode, bearingDeg: number) {
-    const az = (clamp(bearingDeg * DIRECTION_GAIN, -85, 85) * Math.PI) / 180;
-    const now = this.ctx!.currentTime;
-    panner.positionX.setTargetAtTime(Math.sin(az), now, 0.03);
-    panner.positionZ.setTargetAtTime(-Math.cos(az), now, 0.03);
+  /** Угол на объект -> стерео: -1 — только левое ухо, +1 — только правое. */
+  private place(pan: StereoPannerNode, bearingDeg: number) {
+    const v = Math.sin((clamp(bearingDeg * DIRECTION_GAIN, -90, 90) * Math.PI) / 180);
+    pan.pan.setTargetAtTime(v, this.ctx!.currentTime, 0.03);
   }
 
-  /** Новые данные от сервера. */
-  update(obstacles: Obstacle[]) {
-    this.lastUpdate = Date.now();
-    const prevKey = this.primary ? `${this.primary.kind}:${this.primary.id}` : null;
-    this.primary = obstacles.find((o) => o.primary) ?? null;
-    this.alarm = obstacles.find((o) => o.moving && o.threat && !o.primary) ?? null;
-    this.updateCalm(prevKey);
-    if (!this.ctx) return;
-    if (this.primary) {
-      this.place(this.panner!, this.primary.bearing);
-      // Новая главная опасность — первый сигнал сразу, не ждём интервала старой
-      if (`${this.primary.kind}:${this.primary.id}` !== prevKey) this.nextBeep = 0;
-    }
-    if (this.alarm) this.place(this.alarmPanner!, this.alarm.bearing);
-  }
-
-  /** Стоит ли человек: главная опасность неподвижна и не приближается 2 с. */
-  private updateCalm(prevKey: string | null) {
-    const p = this.primary;
+  /** Новые данные от сервера. near — ближайшее препятствие слева/справа рядом (по карте). */
+  update(obstacles: Obstacle[], near?: { left: number | null; right: number | null } | null,
+         front?: { d: number; bearing: number } | null) {
     const now = Date.now();
-    const same = p != null && `${p.kind}:${p.id}` === prevKey;
-    const stays =
-      p != null &&
-      !p.moving &&
-      same &&
-      Math.abs(p.approach) < CALM_APPROACH_MPS &&
-      (this.calmSince == null || p.distance > this.calmDist - CALM_STEP_M);
+    this.lastUpdate = now;
+    if (front) {
+      // сглаживаем, но приближение принимаем быстрее (безопаснее)
+      const prev = this.front;
+      const a = prev && front.d < prev.d ? Math.max(FRONT_SMOOTH, 0.7) : FRONT_SMOOTH;
+      this.front = prev ? { d: prev.d + a * (front.d - prev.d), bearing: front.bearing } : { ...front };
+      this.frontAt = now;
+      if (this.ctx) this.place(this.pan!, front.bearing);
+    } else if (now - this.frontAt > FRONT_HOLD_MS) {
+      this.front = null;
+    }
+    this.near = near ?? { left: null, right: null };
+    this.alarm = obstacles.find((o) => o.moving && o.threat && !o.primary) ?? null;
+    const p = obstacles.find((o) => o.primary) ?? null;
+    if (p) {
+      const key = `${p.kind}:${p.id}`;
+      if (key !== this.primaryKey) {
+        this.nextBeep = 0; // новая главная опасность — первый сигнал сразу
+        this.step = stepOf(p.distance);
+      } else {
+        // Ступень меняется только с запасом: ритм не прыгает от шума расстояния
+        // ближе — принимаем, если и с запасом 0.15 м уже ближе; дальше — если и с запасом дальше
+        const s = stepOf(p.distance);
+        if (s < this.step && stepOf(p.distance + HYST_M) < this.step) this.step = s;
+        else if (s > this.step && stepOf(p.distance - HYST_M) > this.step) this.step = s;
+      }
+      this.updateCalm(p, key === this.primaryKey);
+      this.primary = p;
+      this.primaryKey = key;
+      this.primaryAt = now;
+    } else if (now - this.primaryAt > HOLD_MS) {
+      this.primary = null; // пропала не на миг — отпускаем
+      this.primaryKey = null;
+      this.calm = false;
+      this.calmSince = null;
+    }
+    if (!this.ctx) return;
+    if (this.primary) this.place(this.pan!, this.primary.bearing);
+    if (this.alarm) this.place(this.alarmPan!, this.alarm.bearing);
+  }
+
+  /** Стоит ли человек (по картинке): главная опасность неподвижна и не приближается 2 с. */
+  private updateCalm(p: Obstacle, same: boolean) {
+    const now = Date.now();
+    const stays = !p.moving && same && Math.abs(p.approach) < 0.2 && (this.calmSince == null || p.distance > this.calmDist - 0.3);
     if (!stays) {
       if (this.calm) this.nextBeep = 0; // пошёл — обычный сигнал сразу
       this.calm = false;
@@ -152,8 +199,8 @@ class SpatialAudio {
     }
     if (this.calmSince == null) {
       this.calmSince = now;
-      this.calmDist = p!.distance;
-    } else if (now - this.calmSince >= CALM_AFTER_MS) {
+      this.calmDist = p.distance;
+    } else if (now - this.calmSince >= 2000) {
       this.calm = true;
     }
   }
@@ -173,6 +220,8 @@ class SpatialAudio {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     this.primary = this.alarm = null;
+    this.front = null;
+    this.primaryKey = null;
     this.calm = false;
     this.calmSince = null;
     this.stopSolid();
@@ -185,38 +234,50 @@ class SpatialAudio {
     const p = fresh && this.enabled ? this.primary : null;
     const now = ctx.currentTime;
 
-    if (p && (this.calm || this.scan)) {
-      // Стоит: редкий тихий сигнал "препятствие всё ещё здесь", без непрерывного тона
-      this.stopSolid();
-      if (now >= this.nextBeep) {
-        this.beep(this.panner!, p, CALM_LEVEL);
-        this.nextBeep = now + CALM_INTERVAL_S;
-      }
-    } else if (p && beepInterval(p) === 0) {
-      this.startSolid(p);
+    // Парктроник: чем ближе то, что прямо перед камерой, тем чаще; вплотную — непрерывно
+    const f = fresh && this.enabled ? this.front : null;
+    const iv = f && f.d <= FRONT_FAR_M ? frontInterval(f.d) : null;
+    if (iv === 0) {
+      this.startSolid(TONE.obstacle);
     } else {
       this.stopSolid();
-      if (p && now >= this.nextBeep) {
-        this.beep(this.panner!, p, 1.0);
-        this.nextBeep = now + beepInterval(p);
+      if (iv != null) {
+        // интервал меняется с расстоянием сразу, не дожидаясь старого (иначе ритм "запаздывает")
+        this.nextBeep = Math.min(this.nextBeep, this.lastBeep + iv);
+        if (now >= this.nextBeep) {
+          this.beep(this.pan!, TONE.obstacle, 1.0);
+          this.lastBeep = now;
+          this.nextBeep = now + iv;
+        }
+      } else {
+        this.nextBeep = 0; // появилось препятствие — первый писк сразу
+      }
+    }
+    void p;
+
+    // Обход: препятствие сбоку рядом — тихий тик в своё ухо (не пока стоит: это раздражает)
+    if (fresh && this.enabled && this.solid == null && now >= this.nextSide) {
+      const { left, right } = this.near;
+      const sides = ([["left", left], ["right", right]] as const).filter(([, d]) => d != null && d <= SIDE_FAR_M);
+      if (sides.length) {
+        const [side, d] = sides[this.sideTurn++ % sides.length];
+        this.sidePan!.pan.value = side === "left" ? -0.95 : 0.95;
+        this.beep(this.sidePan!, { freq: SIDE_FREQ, type: "sine" }, SIDE_LEVEL, 0.05);
+        this.nextSide = now + clamp(0.25 + (d as number) * 0.35, 0.3, 0.7);
       }
     }
 
     const a = fresh && this.enabled ? this.alarm : null;
     if (a && now >= this.nextAlarm) {
-      this.chirp(this.alarmPanner!);
+      this.chirp(this.alarmPan!);
       this.nextAlarm = now + ALARM_INTERVAL_S;
     }
   }
 
-  private beep(dest: AudioNode, o: Obstacle, level: number) {
+  private beep(dest: AudioNode, tone: { freq: number; type: OscillatorType }, level: number, dur = 0.08) {
     const ctx = this.ctx!;
     const t = ctx.currentTime + 0.005;
-    const tone = TONE[o.kind];
-    const dur = 0.08;
-    // Чем ближе, тем выше тон — расстояние слышно не только по частоте сигналов
-    const pitch = 1 + 0.4 * clamp((NEAR_PITCH_M - o.distance) / NEAR_PITCH_M, 0, 1);
-    const osc = new OscillatorNode(ctx, { type: tone.type, frequency: tone.freq * pitch });
+    const osc = new OscillatorNode(ctx, { type: tone.type, frequency: tone.freq });
     const env = ctx.createGain();
     env.gain.setValueAtTime(0.0001, t);
     env.gain.exponentialRampToValueAtTime(level, t + 0.005);
@@ -244,14 +305,14 @@ class SpatialAudio {
     osc.stop(t + 0.21);
   }
 
-  private startSolid(o: Obstacle) {
+  private startSolid(tone: { freq: number; type: OscillatorType }) {
     if (this.solid) return;
     const ctx = this.ctx!;
-    const osc = new OscillatorNode(ctx, { type: "square", frequency: TONE[o.kind].freq * 1.2 });
+    const osc = new OscillatorNode(ctx, { type: "square", frequency: tone.freq * 1.2 });
     const gain = ctx.createGain();
     gain.gain.setValueAtTime(0.0001, ctx.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.9, ctx.currentTime + 0.02);
-    osc.connect(gain).connect(this.panner!);
+    osc.connect(gain).connect(this.pan!);
     osc.start();
     this.solid = { osc, gain };
   }

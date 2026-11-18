@@ -66,10 +66,14 @@ class Pose(BaseModel):
     в координатах камеры — X вправо, Y вниз по картинке, Z вперёд от камеры.
     Телефон вертикально: [0, -1, 0]; наклонён к полу на 30°: [0, -0.87, -0.5]."""
     type: Literal["pose"]
-    up: tuple[float, float, float]
+    up: tuple[float, float, float] | None = None  # None — у телефона нет датчика ориентации
     # Курс: куда человеку нужно относительно оси камеры, градусы (> 0 правее); None — курс не задан.
     # Сторона обхода выбирается ближе к курсу.
     course: float | None = Field(default=None, ge=-180, le=180)
+    # Для записи сессии (SPATIA_RECORD=1): что делает человек и куда смотрит камера по компасу
+    motion: Literal["walking", "standing", "turning", "unknown"] | None = None
+    heading: float | None = None
+    map: bool = False  # прислать карту местности (экран "карта" открыт)
 
 
 class Ready(BaseModel):
@@ -77,6 +81,9 @@ class Ready(BaseModel):
     v: int = PROTOCOL_VERSION
     session: str
     max_width: int = CLIENT_MAX_WIDTH
+    # Что умеет этот сервер. Клиент новее сервера (сервер не перезапустили после обновления) —
+    # видит, что функции нет, и просит перезапустить сервер.
+    features: list[str] = ["map", "motion"]
 
 
 class Result(BaseModel):
@@ -86,6 +93,14 @@ class Result(BaseModel):
     groups: list[Group] = []  # толпа / парковка
     hints: list[Hint] = []  # подсказки по кадру: too_dark, blurry
     bypass: Bypass | None = None  # с какой стороны обойти главную опасность (none — прохода не видно)
+    # Карта местности (если клиент просит, pose.map=true): занятые клетки, маршрут, люди — в метрах
+    # относительно человека, в осях мира (x — "восток", y — "север" компаса телефона)
+    map: dict | None = None
+    path_bearing: float | None = None  # куда ведёт маршрут по курсу, градусы от оси камеры (> 0 — правее)
+    # Ближайшее препятствие сбоку рядом (по карте, в том числе вне кадра): {"left": 0.6, "right": null}, м
+    near: dict | None = None
+    # Парктроник: ближайшее прямо перед камерой в этом кадре {"d": 2.4, "bearing": -3.0}; null — пусто
+    front: dict | None = None
     server_ms: float
     dropped: int  # сколько кадров сервер выбросил как устаревшие (за сессию)
 

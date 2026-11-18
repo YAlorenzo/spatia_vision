@@ -98,10 +98,10 @@ class EgoMotion:
         """Пиксели -> 3D-точки на плоскости пола (NaN, если луч не попадает в пол)."""
         rays = np.stack([(pts[:, 0] - w / 2) / focal, (pts[:, 1] - h / 2) / focal, np.ones(len(pts))], axis=1)
         denom = rays @ plane.normal
-        with np.errstate(divide="ignore", invalid="ignore"):
+        with np.errstate(divide="ignore", invalid="ignore"):  # луч параллелен полу — бесконечность, отсекаем ниже
             t = -plane.height / denom
-        p = rays * t[:, None]
-        p[(t <= 0) | (p[:, 2] > 8) | (p[:, 2] < 0.3)] = np.nan
+            p = rays * t[:, None]
+            p[~np.isfinite(t) | (t <= 0) | (p[:, 2] > 8) | (p[:, 2] < 0.3)] = np.nan
         return p
 
     def update(self, gray: np.ndarray, t: float, plane, focal: float,

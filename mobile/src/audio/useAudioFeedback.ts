@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { Bypass, Group, Hint, Obstacle } from "../api/protocol";
 import { cameraTilt, TiltAdvice } from "../sensors/cameraTilt";
 import { course } from "../sensors/course";
+import { motion } from "../sensors/motion";
 import { announcer } from "./announcer";
-import { haptics } from "./haptics";
 import { spatialAudio } from "./spatialAudio";
 
 /** Разблокировать звук и датчики — вызывать в обработчике нажатия (например, кнопка "Начать"). */
@@ -11,6 +11,7 @@ export function unlockAudio() {
   spatialAudio.unlock();
   announcer.unlock();
   cameraTilt.unlock();
+  motion.unlock();
 }
 
 interface Options {
@@ -18,28 +19,26 @@ interface Options {
   groups: Group[];
   hints: Hint[];
   bypass: Bypass | null;
+  near?: { left: number | null; right: number | null } | null;
+  front?: { d: number; bearing: number } | null;
   active: boolean; // идёт сканирование и есть связь
   beeps: boolean;
   speech: boolean;
-  vibration: boolean;
 }
 
-/** Подаёт результаты сервера в звук, вибрацию и голос. */
-export function useAudioFeedback({ obstacles, groups, hints, bypass, active, beeps, speech, vibration }: Options) {
+/** Подаёт результаты сервера в звук и голос. */
+export function useAudioFeedback({ obstacles, groups, hints, bypass, near, front, active, beeps, speech }: Options) {
   useEffect(() => {
     spatialAudio.enabled = beeps;
     announcer.enabled = speech;
-    haptics.enabled = vibration;
-  }, [beeps, speech, vibration]);
+  }, [beeps, speech]);
 
   useEffect(() => {
     if (!active) return;
     spatialAudio.start();
-    haptics.start();
     announcer.onSpeakingChange = (speaking) => spatialAudio.duck(speaking);
     return () => {
       spatialAudio.stop();
-      haptics.stop();
       announcer.stop();
       announcer.onSpeakingChange = null;
     };
@@ -48,7 +47,7 @@ export function useAudioFeedback({ obstacles, groups, hints, bypass, active, bee
   useEffect(() => {
     if (!active) return;
     const now = Date.now();
-    spatialAudio.update(obstacles);
+    spatialAudio.update(obstacles, near, front);
     announcer.update({
       obstacles,
       groups,
@@ -58,12 +57,13 @@ export function useAudioFeedback({ obstacles, groups, hints, bypass, active, bee
       calm: spatialAudio.calm,
       heading: cameraTilt.heading(now),
       course: course.deviation(now),
+      gait: motion.walking(now),
+      turning: motion.turning(now),
     });
-    // Осмотр (человек поворачивает телефон): сигнал тихий, вибрации нет
+    // Осмотр (человек поворачивает телефон): сигнал тихий
     spatialAudio.scan = announcer.scanning;
-    haptics.calm = spatialAudio.calm || announcer.scanning;
-    haptics.update(obstacles);
-  }, [obstacles, groups, hints, bypass, active]);
+    spatialAudio.standing = motion.walking(now) === "standing";
+  }, [obstacles, groups, hints, bypass, near, front, active]);
 }
 
 const NO_DATA_MS = 3000; // столько нет ответов сервера — "нет связи"

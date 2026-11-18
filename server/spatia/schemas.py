@@ -80,6 +80,10 @@ class FrameDebug:
     hints: list[Hint] = field(default_factory=list)
     bypass: Bypass | None = None
     lanes: tuple[list[float], list[str]] | None = None  # (сдвиги полос, free/blocked/unseen) — для отладки
+    map_view: dict | None = None  # карта для экрана (если клиент её просит)
+    path_bearing: float | None = None  # куда ведёт маршрут по курсу, градусы от оси камеры
+    near_sides: dict | None = None  # ближайшее препятствие слева / справа рядом (по карте), м
+    front: dict | None = None  # парктроник: ближайшее прямо перед камерой {d, bearing}
     timings_ms: dict[str, float] = field(default_factory=dict)
 
 

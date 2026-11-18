@@ -1,7 +1,7 @@
 import { Platform } from "react-native";
 import type { Bypass, Group, Hint, Obstacle } from "../api/protocol";
 import type { TiltAdvice } from "../sensors/cameraTilt";
-import { classLabel, groupText, meters, spokenDistance, where } from "../components/labels";
+import { classLabel, groupText, meters, spokenDistance } from "../components/labels";
 import { courseText } from "../sensors/course";
 
 /**
@@ -10,16 +10,16 @@ import { courseText } from "../sensors/course";
  * Главная задача — НЕ ПЕРЕГРУЖАТЬ: сигнал передаёт срочность, голос — что это, где и как далеко.
  * В каждой фразе об объекте есть расстояние.
  *
- *   1. "Warning! Car on the left, 6 meters" — что-то едет/бежит на тебя. Перебивает речь.
+ *   1. "Warning! Car, 6 meters left" — что-то едет/бежит на тебя. Перебивает речь.
  *   2. Препятствие НА ПУТИ: неподвижное — с 5 м, человек/транспорт/животное — с 10 м.
- *      "Chair ahead, 3 meters. Pass on the left". Не чаще раза в 5 с.
- *   3. Сторона обхода появилась или сменилась: "Chair, 2 meters. Pass on the right".
+ *      "Chair, 3 meters. Pass left" (на пути — без слова "ahead"). Не чаще раза в 5 с.
+ *   3. Сторона обхода появилась или сменилась: "Chair, 2 meters. Pass right".
  *   4. Камера плохо видит: "Raise the phone", "Stop. Too dark…".
  *   5. Курс: "Turn left 40 degrees", "On course".
  *   6. Заранее о живом и движущемся (не чаще фразы в 3 с):
- *      люди и животные — с 10 м: "Person on the right, 8 meters", "Person approaching ahead, 9 meters";
- *      группа людей — одной фразой: "Group of people on the left, 9 meters";
- *      едущий транспорт — как только сервер его заметил (до 20 м): "Car moving on the left, 15 meters";
+ *      люди и животные — с 10 м: "Person, 8 meters right", "Person approaching, 9 meters";
+ *      группа людей — одной фразой: "Group of people, 9 meters left";
+ *      едущий транспорт — как только сервер его заметил (до 20 м): "Car moving, 15 meters left";
  *      стоящий транспорт — с 5 м; на парковке — "Caution, parking area" вместо каждой машины.
  *
  * РЕЖИМ ОСМОТРА. Камера телефона видит узко, поэтому часто прохода в кадре нет — голос просит
@@ -32,12 +32,12 @@ import { courseText } from "../sensors/course";
 const DANGER_COOLDOWN_MS = 5000; // по тому же объекту
 const DANGER_GAP_MS = 3000; // между любыми тревогами
 const SAME_PRIMARY_MS = 6000; // та же главная опасность вернулась — не повторяем сразу
-const STATIC_ANNOUNCE_M = 5; // неподвижное — говорим с этого расстояния
+const STATIC_ANNOUNCE_M = 6; // неподвижное на пути — говорим с этого расстояния (жёлтая рамка)
+const APPROACH_BANDS_M = [4, 3, 2]; // дальше по мере подхода — только метры: "4 meters" (с 4 м рамка красная)
 const DYNAMIC_ANNOUNCE_M = 10; // люди, животные (и транспорт на пути) — заранее
 const PRIMARY_GAP_MS = 4000; // новое препятствие на пути объявляем не чаще
 const URGENT_M = 2.5; // ...а близкое —
 const URGENT_GAP_MS = 1500; // не чаще этого
-const NEAR_M = 2; // то же препятствие стало ближе — короткое уточнение
 const INTERRUPT_M = 3; // новая главная опасность ближе — перебивает обычную фразу
 const NOTICE_REPEAT_MS = 20000; // тот же человек/машина — не чаще
 const CROWD_REPEAT_MS = 20000;
@@ -61,7 +61,8 @@ const TILT_TEXT: Record<TiltAdvice, [string, string, string]> = {
 const UNCLEAR_REPEAT_MS = 8000; // камера плохо видит — просим остановиться
 const GAP_MS = 400; // пауза между фразами, чтобы не сливались
 const MINOR_GAP_MS = 3000; // второстепенные фразы — не чаще
-const GUIDE_REPEAT_MS = 10000; // стоишь перед препятствием — совет обхода повторяется
+const GUIDE_REPEAT_MS = 20000; // стоишь перед препятствием — совет обхода повторяется
+const SETTLED_MS = 1500; // стоит и не крутит телефон столько — можно советовать по тому, что перед ним
 const GUIDE_CHANGE_MS = 2500; // совет изменился
 const GUIDE_SIDE_MS = 3000; // сторона обхода на ходу — не чаще
 const GUIDE_FLIP_MS = 8000; // смена стороны для того же препятствия — не чаще
@@ -95,6 +96,8 @@ export interface AnnouncerInput {
   calm?: boolean; // человек стоит перед препятствием
   heading?: number | null; // куда смотрит камера, градусы по часовой (ноль произвольный); null — нет датчика
   course?: number | null; // куда курс относительно камеры, градусы (> 0 правее); null — курс не задан
+  gait?: "walking" | "standing" | "unknown"; // по акселерометру телефона
+  turning?: boolean; // телефон поворачивают (компас), > 25°/с
 }
 
 // У препятствий по глубине id — это зона (-1/-2/-3), поэтому в ключ входит и название:
@@ -107,14 +110,15 @@ const dist = (o: Obstacle) => meters(spokenDistance(o));
 /** С какого расстояния говорим об объекте. */
 const announceRange = (o: Obstacle) => (o.kind === "obstacle" ? STATIC_ANNOUNCE_M : DYNAMIC_ANNOUNCE_M);
 
-const whereShort = (o: Obstacle) => (o.in_path ? "ahead" : o.bearing < 0 ? "left" : "right");
+// Прямо по курсу — без слова: по умолчанию всё, о чём говорим, впереди. Сторону называем, только если сбоку.
+const sideWord = (o: Obstacle) => (o.in_path ? "" : o.bearing < 0 ? " left" : " right");
 
-/** "Person approaching, 8 meters ahead" / "Car moving on the left, 15 meters" / "Person on the right, 6 meters". */
+/** "Person approaching, 8 meters" / "Car moving, 15 meters left" / "Person, 6 meters right". */
 function noticeText(o: Obstacle): string {
   const state = o.moving
     ? o.kind === "vehicle" ? " moving" : " running"
     : o.kind !== "vehicle" && o.own_speed > 0.5 ? " approaching" : "";
-  return `${classLabel(o.cls)}${state}, ${dist(o)} ${whereShort(o)}`;
+  return `${classLabel(o.cls)}${state}, ${dist(o)}${sideWord(o)}`;
 }
 
 interface Scan {
@@ -151,7 +155,12 @@ export class AnnouncerLogic {
   private courseWasOff = false;
   private scan: Scan | null = null;
   private saidDist = new Map<string, number>(); // на каком расстоянии объявили препятствие
-  private nearSaid: string | null = null; // для какого препятствия уже было уточнение вблизи
+  private bandSaid = new Map<string, number>(); // какой порог подхода уже прозвучал для препятствия
+  // Что сейчас советует голос (для экрана: показываем ровно то, что прозвучало)
+  advice: { text: string; at: number } | null = null;
+  private settledSince: number | null = null; // стоит и не поворачивается — с этого момента
+  private standHeading: number | null = null; // куда смотрел, пока стоял неподвижно
+  private standBlocked = false; // стоял перед препятствием на пути
   lastEndAt = 0; // когда закончилась последняя фраза (для паузы)
 
   /** Идёт осмотр (человек стоит и поворачивает телефон) — сигнал в это время тихий. */
@@ -161,8 +170,12 @@ export class AnnouncerLogic {
 
   reset() {
     this.scan = null;
+    this.settledSince = null;
+    this.standHeading = null;
+    this.standBlocked = false;
     this.saidDist.clear();
-    this.nearSaid = null;
+    this.bandSaid.clear();
+    this.advice = null;
     this.primaryPhraseAt = -Infinity;
     this.guide = { bypass: null, at: -Infinity };
     this.tiltKind = null;
@@ -198,12 +211,36 @@ export class AnnouncerLogic {
         this.dangerAt.set(k, now);
         this.lastDangerAt = now;
         this.noticeAt.set(k, now); // не повторять тем же как обычное оповещение
-        return this.say(`Warning! ${classLabel(danger.cls)} ${where(danger)}, ${dist(danger)}`, true, now);
+        return this.say(`Warning! ${classLabel(danger.cls)}, ${dist(danger)}${sideWord(danger)}`, true, now);
       }
     }
 
     const p = obstacles.find((o) => o.primary);
     const quiet = !speaking && now - this.lastEndAt >= GAP_MS;
+
+    // Что делает человек. Датчика нет — "стоит" по картинке (препятствие не приближается).
+    const gait = input.gait ?? "unknown";
+    const turning = input.turning ?? false;
+    const standing = gait === "standing" || (gait === "unknown" && (input.calm ?? false));
+    const h = input.heading ?? null;
+    if (standing && !turning) {
+      this.settledSince ??= now;
+      this.standHeading = h;
+      this.standBlocked = p != null && p.in_path && !p.moving && p.distance <= STATIC_ANNOUNCE_M;
+    } else {
+      this.settledSince = null;
+    }
+    const settled = this.settledSince != null && now - this.settledSince >= SETTLED_MS;
+
+    // Пошёл — осмотр окончен, обычный режим (о том, что на пути, скажем заново)
+    if (this.scan && gait === "walking") {
+      this.scan = null;
+      this.primaryKey = null;
+    }
+    // Стоял перед препятствием и начал поворачивать телефон — это осмотр, даже без просьбы
+    if (!this.scan && standing && turning && this.standBlocked) {
+      this.scan = { since: now, ref: this.standHeading ?? h, minRel: 0, maxRel: 0, freeSince: null, promptAt: now, walking: 0 };
+    }
 
     // Режим осмотра: вместо обычных фраз — поиск свободного направления
     if (this.scan) return this.scanStep(this.scan, p, input.heading ?? null, tilt, now, speaking, quiet);
@@ -218,7 +255,9 @@ export class AnnouncerLogic {
       // Близкое (< 2.5 м) ждёт меньше: иначе о нём скажем, когда человек уже у него
       const sinceLast = now - this.primaryPhraseAt;
       const rested = p.moving || sinceLast >= PRIMARY_GAP_MS || (p.distance < URGENT_M && sinceLast >= URGENT_GAP_MS);
-      if (k !== this.primaryKey && rested && (p.distance <= announceRange(p) || p.moving)) {
+      // Стоит или крутит телефон — не объявляем то, на что навелась камера (стоя — совет ниже)
+      const lookingAround = turning || (standing && !p.moving);
+      if (k !== this.primaryKey && rested && !lookingAround && (p.distance <= announceRange(p) || p.moving)) {
         // Близкая (< 3 м) перебивает второстепенную фразу, но не другую фразу об опасности
         const urgent = speaking && !this.lastWasDanger && !this.lastWasPrimary && p.distance < INTERRUPT_M;
         if (!quiet && !urgent) return null;
@@ -238,11 +277,24 @@ export class AnnouncerLogic {
     }
 
     // Уточнение вблизи: о препятствии сказали издалека ("5 meters") — на 2 м коротко напомнить
-    if (p && quiet && p.in_path && !p.moving && keyOf(p) === this.primaryKey && p.distance <= NEAR_M
-        && this.nearSaid !== keyOf(p) && (this.saidDist.get(keyOf(p)) ?? 0) > NEAR_M + 0.7) {
-      this.nearSaid = keyOf(p);
-      this.primaryPhraseAt = now;
-      return this.say(`${classLabel(p.cls)}, ${dist(p)}`, false, now, false, true);
+    // Подход к тому же препятствию: прошли порог 4 / 3 / 2 м — коротко, только метры
+    if (p && quiet && !standing && !turning && p.in_path && !p.moving && keyOf(p) === this.primaryKey) {
+      const k = keyOf(p);
+      const said = this.bandSaid.get(k) ?? this.saidDist.get(k) ?? Infinity;
+      const band = APPROACH_BANDS_M.find((b) => p.distance <= b && b < said - 0.4);
+      if (band != null) {
+        // запоминаем произнесённое расстояние: следующий порог — только если он заметно ближе
+        this.bandSaid.set(k, spokenDistance(p));
+        this.primaryPhraseAt = now;
+        // Фактическое расстояние на момент речи (а не номер порога: фраза могла чуть задержаться)
+        // и, если ещё не звучала, сторона обхода — в той же фразе, чтобы отсчёт её не перебивал
+        let side = "";
+        if ((bypass === "left" || bypass === "right") && (this.guide.key !== k || this.guide.bypass !== bypass)) {
+          this.guide = { bypass, at: now, key: k };
+          side = `. ${passText(bypass)}`;
+        }
+        return this.say(`${dist(p)}${side}`, false, now, false, true);
+      }
     }
 
     if (!quiet) return null;
@@ -264,7 +316,7 @@ export class AnnouncerLogic {
 
     // 4. Совет обхода: то, что показано на экране, должно прозвучать. Для препятствия на пути
     //    говорим сторону, если для него ещё не говорили или сторона сменилась.
-    if (p && p.in_path && !p.moving && p.distance <= STATIC_ANNOUNCE_M && (bypass === "left" || bypass === "right")) {
+    if (p && !standing && !turning && p.in_path && !p.moving && p.distance <= STATIC_ANNOUNCE_M && (bypass === "left" || bypass === "right")) {
       const k = keyOf(p);
       const fresh = this.guide.key !== k || this.guide.bypass !== bypass;
       // Для того же препятствия сторону меняем редко: "left… right… left" только сбивает
@@ -278,7 +330,7 @@ export class AnnouncerLogic {
     }
 
     // Стоит перед препятствием — совет, как обойти (сигнал в это время редкий и тихий)
-    if (p && input.calm && p.in_path && !p.moving) {
+    if (p && standing && settled && p.in_path && !p.moving && p.distance <= STATIC_ANNOUNCE_M) {
       const b: Bypass = bypass ?? "none";
       const wait = b !== this.guide.bypass ? GUIDE_CHANGE_MS : GUIDE_REPEAT_MS;
       if (now - this.guide.at > wait) {
@@ -288,10 +340,9 @@ export class AnnouncerLogic {
         this.primaryPhraseAt = now;
         if (b !== "none") return this.say(`${classLabel(p.cls)}, ${meters(p.distance)}. ${passText(b)}`, false, now);
         // Прохода в кадре нет — начинаем осмотр
-        const h = input.heading ?? null;
         this.scan = { since: now, ref: h, minRel: 0, maxRel: 0, freeSince: null, promptAt: now, walking: 0 };
         return this.say(
-          `${classLabel(p.cls)}, ${meters(p.distance)}. No way around in view. Turn the phone slowly left or right`,
+          `${classLabel(p.cls)}, ${meters(p.distance)}. No way around. Turn the phone slowly left or right`,
           false,
           now,
         );
@@ -304,6 +355,8 @@ export class AnnouncerLogic {
     if (dev == null) {
       this.courseOffSince = null;
       this.courseWasOff = false;
+    } else if (turning) {
+      this.courseOffSince = null; // крутит телефон — отклонение не настоящее
     } else if (Math.abs(dev) > COURSE_OFF_DEG) {
       this.courseOffSince ??= now;
       const busy = p != null && p.in_path && p.distance <= COURSE_BUSY_M;
@@ -354,6 +407,8 @@ export class AnnouncerLogic {
           : o.distance <= DYNAMIC_ANNOUNCE_M)
       .filter((o) => !(crowdGroup && o.kind === "person" && !o.moving)) // в группе — не по одному
       .filter((o) => !(parking && o.kind === "vehicle" && !o.moving)) // на парковке — стоящие машины не по одной
+      // стоит или крутит телефон — только то, что само движется к тебе
+      .filter((o) => !(turning || standing) || o.moving || (o.kind !== "vehicle" && o.own_speed > 0.5))
       .sort((a, b) => Number(b.moving) - Number(a.moving) || a.distance - b.distance);
     for (const o of notices) {
       const k = keyOf(o);
@@ -379,6 +434,7 @@ export class AnnouncerLogic {
     }
     const end = () => {
       this.scan = null;
+      this.standBlocked = false; // осмотр окончен — новый только после того, как снова встанет перед препятствием
       this.primaryKey = p ? keyOf(p) : null; // то, что сейчас в кадре, уже "известно" — не объявлять заново
       this.guide = { bypass: null, at: now };
       this.primaryPhraseAt = now; // после осмотра не объявлять сразу то, что мелькнуло в кадре
@@ -406,7 +462,8 @@ export class AnnouncerLogic {
       end();
       if (rel == null) return this.say("Clear here. Go this way", false, now, true);
       if (Math.abs(rel) < SCAN_TURNED_DEG) return this.say("Path clear", false, now, true);
-      return this.say(`Clear here, to the ${rel > 0 ? "right" : "left"}. Go this way`, false, now, true);
+      const deg = Math.max(5, Math.round(Math.abs(rel) / 5) * 5);
+      return this.say(`Clear, ${deg} degrees ${rel > 0 ? "right" : "left"}. Go this way`, false, now, true);
     }
     if (!quiet) return null;
 
@@ -426,7 +483,7 @@ export class AnnouncerLogic {
       if (doneR) return this.say("Nothing on the right. Turn the phone left", false, now);
       if (doneL) return this.say("Nothing on the left. Turn the phone right", false, now);
     }
-    return this.say(p ? `Blocked here, ${meters(p.distance)}. Keep turning` : "Keep turning", false, now);
+    return this.say("Keep turning", false, now);
   }
 
   /**
@@ -456,6 +513,7 @@ export class AnnouncerLogic {
   private say(text: string, danger: boolean, now: number, interrupt = false, primary = false): Utterance | null {
     if (!danger && text === this.lastText.text && now - this.lastText.at < 3000) return null;
     this.lastText = { text, at: now };
+    if (/Pass (left|right)|No way around|Clear,|No way through/.test(text)) this.advice = { text, at: now };
     this.lastWasDanger = danger;
     this.lastWasPrimary = primary;
     return { text, danger, interrupt };
@@ -475,6 +533,11 @@ class Announcer {
   /** Идёт осмотр (человек поворачивает телефон в поисках прохода). */
   get scanning() {
     return this.enabled && this.logic.scanning;
+  }
+
+  /** Последний совет обхода, который прозвучал (для экрана). */
+  get advice() {
+    return this.logic.advice;
   }
 
   /** Вызывать из обработчика нажатия (мобильные браузеры требуют жест для первой речи). */

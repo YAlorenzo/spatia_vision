@@ -25,6 +25,7 @@ from .depth import DepthEstimator
 from .detection import Detector, Tracker
 from .free_space import ZONES, FreeSpaceAnalyzer, GenericObstacle
 from .guidance import BypassAdvisor, lanes
+from .worldmap import WorldMap
 from .motion import EgoMotion, MotionEstimator
 from .schemas import Detection, DistanceEstimate, FrameDebug, Kind, Obstacle, TrackedObject, Zone
 from .spatial import zone_and_pan
@@ -72,6 +73,9 @@ class Session:
         self._held: tuple[GenericObstacle, float] | None = None  # последнее подтверждённое препятствие на пути
         # Куда человеку нужно относительно оси камеры (присылает клиент, если задан курс), градусы, > 0 правее
         self.course_deg: float | None = None
+        self.heading_deg: float | None = None  # куда смотрит камера по компасу (присылает клиент)
+        self.want_map = False  # клиенту нужна карта для экрана
+        self.map = WorldMap(self.s)
         self._floor_raw: float | None = None  # высота камеры над полом в единицах модели глубины (прошлый кадр)
         self._names: dict[str, deque[str]] = {}  # последние названия препятствия по зонам
         self.frame_idx = 0
@@ -223,7 +227,11 @@ class Session:
             [o.approach_mps for o in objects if o.kind in ("obstacle", "vehicle") and o.motion_valid],
         )
         # Главная опасность: коридор движения + то, что едет на пользователя
-        self.threats.assess(objects, ego, focal, t_frame)
+        # Препятствие уже есть на карте (видели раньше, например сбоку) — угроза без повторной проверки
+        def known(o: TrackedObject) -> bool:
+            return self.map.known(math.copysign(o.lateral_m, o.bearing_deg), o.forward_m, self.heading_deg)
+
+        self.threats.assess(objects, ego, focal, t_frame, known)
         # Толпа / парковка / слишком темно
         groups, hints = self.context.update(objects, gray, t_frame)
         # Запоминаем подтверждённое препятствие на пути (для удержания при мигании)
@@ -238,6 +246,25 @@ class Session:
         if primary is not None and free_dbg is not None:
             offsets, lane_state = lanes(free_dbg.points, free_dbg.ground_points, objects, primary, focal, self.s)
         bypass = self.bypass.update(primary, offsets, lane_state, self.course_deg)
+
+        # Карта местности: наносим, что видно; маршрут по курсу в обход препятствий
+        if free_dbg is not None:
+            dyn = np.array([(math.copysign(o.lateral_m, o.bearing_deg), o.forward_m)
+                            for o in objects if o.kind != "obstacle" and o.forward_m < self.s.map_max_range_m])
+            self.map.update(t_frame, self.heading_deg, ego, free_dbg.points, free_dbg.ground_points,
+                            dyn.reshape(-1, 2))
+        course_world = None
+        if self.course_deg is not None and self.heading_deg is not None:
+            course_world = self.heading_deg + self.course_deg
+        self.map.plan(t_frame, course_world)
+        path_bearing = self.map.path_bearing(self.heading_deg, self.s.path_look_m)
+        # Маршрут видит больше, чем кадр (помнит препятствия сбоку) — сторона обхода из него:
+        # куда маршрут смещён там, где стоит препятствие. Маршрута нет (препятствие вплотную,
+        # тупик) — остаётся совет по кадру.
+        if primary is not None and primary.in_path and not primary.moving and course_world is not None:
+            side = self.map.side_at(self.heading_deg, primary.forward_m)
+            if side is not None:
+                bypass = side
         objects.sort(key=lambda o: (not o.primary, not o.threat, o.distance.smoothed_m))
         t4 = time.perf_counter()
 
@@ -325,6 +352,14 @@ class Session:
             hints=hints,
             bypass=bypass,
             lanes=(offsets, lane_state),
+            map_view=self.map.view(self.heading_deg if self.heading_deg is not None else self.map.heading, course_world, [
+                (o.kind, o.detection.cls, math.copysign(o.lateral_m, o.bearing_deg), o.forward_m)
+                for o in objects if o.forward_m < self.s.map_view_m / 2
+            ] + [("obstacle", e[1], e[3], e[2]) for e in extras if e[2] < self.s.map_view_m / 2]) if self.want_map else None,
+            path_bearing=None if path_bearing is None else round(path_bearing, 1),
+            near_sides=self.map.near_sides(self.heading_deg),
+            front=front_distance(free_dbg.points if free_dbg is not None else None, objects,
+                                 self.s.corridor_half_width_m, self.s.front_max_range_m),
             timings_ms={
                 "detect": (t1 - t0) * 1000,
                 "depth": (t2 - t1) * 1000,
@@ -335,3 +370,25 @@ class Session:
         )
         self.frame_idx += 1
         return obstacles, debug
+
+
+def front_distance(points: np.ndarray | None, objects: list[TrackedObject], half_width: float,
+                   max_range: float) -> dict | None:
+    """Парктроник: расстояние до ближайшего, что ПРЯМО ПЕРЕД КАМЕРОЙ (полоса шириной с человека),
+    в каждом кадре — без подтверждений и выбора "главной угрозы". points — (N, 2) препятствия по
+    карте глубины (X вбок, Z вперёд), objects — люди/машины/предметы детектора.
+    {"d": метры, "bearing": градусы (< 0 левее)} или None — впереди пусто."""
+    cand: list[tuple[float, float]] = []  # (дистанция вперёд, смещение вбок)
+    if points is not None and len(points):
+        p = points[(np.abs(points[:, 0]) < half_width) & (points[:, 1] > 0.2) & (points[:, 1] < max_range)]
+        if len(p) >= 3:
+            # не самая ближняя точка (одиночный шум глубины), а 3-я по близости
+            i = np.argsort(p[:, 1])[min(2, len(p) - 1)]
+            cand.append((float(p[i, 1]), float(p[i, 0])))
+    for o in objects:
+        if o.kind != "obstacle" and o.in_path and 0.2 < o.forward_m < max_range:
+            cand.append((o.forward_m, math.copysign(o.lateral_m, o.bearing_deg)))
+    if not cand:
+        return None
+    d, x = min(cand)
+    return {"d": round(d, 2), "bearing": round(math.degrees(math.atan2(x, max(d, 0.1))), 1)}

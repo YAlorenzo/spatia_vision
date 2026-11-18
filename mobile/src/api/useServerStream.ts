@@ -3,6 +3,7 @@ import { Platform } from "react-native";
 import type { CameraView } from "expo-camera";
 import { cameraTilt, Vec3 } from "../sensors/cameraTilt";
 import { course } from "../sensors/course";
+import { motionLabel } from "../sensors/motion";
 import {
   ConfigMessage,
   encodeFrame,
@@ -10,6 +11,7 @@ import {
   HelloMessage,
   Hint,
   Bypass,
+  MapView,
   Obstacle,
   PoseMessage,
   PROTOCOL_VERSION,
@@ -53,10 +55,19 @@ export interface SceneState {
   groups: Group[];
   hints: Hint[];
   bypass: Bypass | null;
+  map: MapView | null;
+  near: { left: number | null; right: number | null } | null;
+  front: { d: number; bearing: number } | null;
 }
 
 const EMPTY_STATS: StreamStats = { fps: 0, rttMs: 0, serverMs: 0, frameKb: 0 };
-const EMPTY_SCENE: SceneState = { obstacles: [], groups: [], hints: [], bypass: null };
+const EMPTY_SCENE: SceneState = { obstacles: [], groups: [], hints: [], bypass: null, map: null, near: null, front: null };
+
+// Экран "карта" открыт — просим сервер присылать карту (иначе не гоняем лишние данные)
+let wantMap = false;
+export const setWantMap = (on: boolean) => {
+  wantMap = on;
+};
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const ema = (prev: number, next: number) => (prev ? prev * 0.8 + next * 0.2 : next);
 
@@ -72,6 +83,8 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
   const [stats, setStats] = useState<StreamStats>(EMPTY_STATS);
   const [frameSize, setFrameSize] = useState<FrameSize | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Страница новее сервера (сервер не перезапустили после обновления) — карты и датчиков не будет
+  const [serverOutdated, setServerOutdated] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const cameraReadyRef = useRef(cameraReady);
@@ -163,13 +176,20 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
         const sentAt = Date.now();
         const reply = waitReply(seq);
         // Ориентация телефона для этого кадра — сервер учтёт наклон и завал вбок
+        // Шлём, даже если датчика ориентации нет: в pose ещё и просьба прислать карту
         const up = cameraTilt.upVector(Date.now());
-        if (up) {
+        {
           const dev = course.deviation(Date.now());
           const pose: PoseMessage = {
             type: "pose",
-            up: up.map((v) => Math.round(v * 1000) / 1000) as Vec3,
+            up: up ? (up.map((v) => Math.round(v * 1000) / 1000) as Vec3) : null,
             course: dev == null ? null : Math.round(dev),
+            motion: motionLabel(Date.now()),
+            heading: (() => {
+              const hd = cameraTilt.heading(Date.now());
+              return hd == null ? null : Math.round(hd);
+            })(),
+            map: wantMap,
           };
           ws.send(JSON.stringify(pose));
         }
@@ -191,6 +211,9 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
           groups: result.groups ?? [],
           hints: result.hints ?? [],
           bypass: result.bypass ?? null,
+          map: result.map ?? null,
+          near: result.near ?? null,
+          front: result.front ?? null,
         });
         setStats(s);
       }
@@ -217,6 +240,7 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
         }
         if (msg.type === "ready") {
           maxWidth = msg.max_width;
+          setServerOutdated(!(msg.features ?? []).includes("map"));
           reconnectDelay = 500;
           setError(null);
           setStatus("streaming");
@@ -261,6 +285,10 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
     groups: sceneState.groups,
     hints: sceneState.hints,
     bypass: sceneState.bypass,
+    map: sceneState.map,
+    near: sceneState.near,
+    front: sceneState.front,
+    serverOutdated,
     stats,
     frameSize,
     error,
