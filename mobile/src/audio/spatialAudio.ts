@@ -72,6 +72,9 @@ class SpatialAudio {
    * на то, что попало в кадр. О свободном направлении говорит голос.
    */
   scan = false;
+  /** Стоит (по акселерометру): сигнал о неподвижном препятствии редкий и тихий, не выключается. */
+  standing = false;
+  private wasStanding = false;
   enabled = true;
 
   get supported() {
@@ -185,7 +188,9 @@ class SpatialAudio {
     const p = fresh && this.enabled ? this.primary : null;
     const now = ctx.currentTime;
 
-    if (p && (this.calm || this.scan)) {
+    if (this.wasStanding && !this.standing) this.nextBeep = 0; // пошёл — обычный сигнал сразу
+    this.wasStanding = this.standing;
+    if (p && !p.moving && (this.calm || this.scan || this.standing)) {
       // Стоит: редкий тихий сигнал "препятствие всё ещё здесь", без непрерывного тона
       this.stopSolid();
       if (now >= this.nextBeep) {

@@ -70,6 +70,9 @@ class Pose(BaseModel):
     # Курс: куда человеку нужно относительно оси камеры, градусы (> 0 правее); None — курс не задан.
     # Сторона обхода выбирается ближе к курсу.
     course: float | None = Field(default=None, ge=-180, le=180)
+    # Для записи сессии (SPATIA_RECORD=1): что делает человек и куда смотрит камера по компасу
+    motion: Literal["walking", "standing", "turning", "unknown"] | None = None
+    heading: float | None = None
 
 
 class Ready(BaseModel):

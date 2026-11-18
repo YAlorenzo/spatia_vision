@@ -3,6 +3,7 @@ import { Platform } from "react-native";
 import type { CameraView } from "expo-camera";
 import { cameraTilt, Vec3 } from "../sensors/cameraTilt";
 import { course } from "../sensors/course";
+import { motionLabel } from "../sensors/motion";
 import {
   ConfigMessage,
   encodeFrame,
@@ -170,6 +171,11 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
             type: "pose",
             up: up.map((v) => Math.round(v * 1000) / 1000) as Vec3,
             course: dev == null ? null : Math.round(dev),
+            motion: motionLabel(Date.now()),
+            heading: (() => {
+              const hd = cameraTilt.heading(Date.now());
+              return hd == null ? null : Math.round(hd);
+            })(),
           };
           ws.send(JSON.stringify(pose));
         }

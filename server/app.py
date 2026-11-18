@@ -149,6 +149,7 @@ async def websocket_endpoint(ws: WebSocket):
         (rec_dir / "meta.json").write_text(json.dumps({"scene": hello.scene, "hfov": hello.hfov, "platform": hello.platform}))
         print(f"[server] {sid}: запись кадров в {rec_dir}")
     pose_up: np.ndarray | None = None  # ориентация телефона для следующего кадра
+    pose_meta: dict = {}  # что делает человек и компас — только для записи (подбор порогов)
     worker = asyncio.create_task(process_loop(ws, session, slot))
     try:
         while True:
@@ -162,16 +163,18 @@ async def websocket_endpoint(ws: WebSocket):
                         (rec_dir / f"{seq:06d}.jpg").write_bytes(jpeg)
                         with open(rec_dir / "frames.jsonl", "a", encoding="utf-8") as f:
                             f.write(json.dumps({"file": f"{seq:06d}.jpg", "t": round(loop.time() - rec_t0, 3),
-                                                "up": None if pose_up is None else [round(float(v), 4) for v in pose_up]}) + "\n")
+                                                "up": None if pose_up is None else [round(float(v), 4) for v in pose_up],
+                                                **pose_meta}) + "\n")
                     slot.put(seq, jpeg, pose_up)
                     pose_up = None  # ориентация относится только к этому кадру
                 except ValueError as e:
                     await send(ws, Error(message=str(e)))
             elif msg.get("text") is not None:
-                if msg["text"].startswith('{"type":"pose"'):  # частое сообщение — без лишних попыток разбора
+                if '"pose"' in msg["text"][:32]:  # частое сообщение — без лишних попыток разбора
                     try:
                         pose = Pose.model_validate_json(msg["text"])
                         session.course_deg = pose.course
+                        pose_meta = {"motion": pose.motion, "heading": pose.heading, "course": pose.course}
                         v = np.array(pose.up, dtype=np.float64)
                         n = np.linalg.norm(v)
                         pose_up = v / n if 0.5 < n < 1.5 else None  # мусор — игнорируем

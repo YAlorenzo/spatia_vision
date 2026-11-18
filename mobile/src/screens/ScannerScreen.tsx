@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Text, TouchableOpacity, View } from "react-native";
+import { Text, TouchableOpacity, useWindowDimensions, View } from "react-native";
 import { CameraView } from "expo-camera";
 import { cssInterop } from "nativewind";
 import type { Scene } from "../api/protocol";
@@ -9,6 +9,7 @@ import { ObstacleOverlay } from "../components/ObstacleOverlay";
 import { useAudioFeedback, useConnectionWatchdog, useTiltAdvice } from "../audio/useAudioFeedback";
 import { announcer } from "../audio/announcer";
 import { course, courseText } from "../sensors/course";
+import { motionLabel } from "../sensors/motion";
 import { describe, setLabelScene, URGENCY_COLOR, zonesText } from "../components/labels";
 
 // CameraView — сторонний компонент, NativeWind должен знать, что className -> style
@@ -27,6 +28,8 @@ const STATUS_DOT: Record<StreamStatus, string> = {
   reconnecting: "bg-red-500",
   stopped: "bg-zinc-500",
 };
+
+const GAIT_TEXT = { walking: "Walking", standing: "Standing", turning: "Turning" } as const;
 
 // С какого расстояния голос говорит о неподвижном препятствии на пути (как в announcer.ts)
 const STATIC_ANNOUNCE_M = 5;
@@ -59,11 +62,20 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
   const connectionLost = useConnectionWatchdog(obstacles, speech);
 
   const primary = obstacles.find((o) => o.primary);
+  // Телефон горизонтально (камера видит шире): панели компактнее, чтобы не закрывать картинку
+  const { width, height } = useWindowDimensions();
+  const landscape = width > height;
 
   // --- Курс: направление, куда человек хочет идти ---
   const [courseDev, setCourseDev] = useState<number | null>(null);
+  // Что телефон думает о человеке — видно на экране, чтобы проверить определение вживую
+  const [gait, setGait] = useState<ReturnType<typeof motionLabel>>("unknown");
   useEffect(() => {
-    const id = setInterval(() => setCourseDev(course.deviation(Date.now())), 400);
+    const id = setInterval(() => {
+      const now = Date.now();
+      setCourseDev(course.deviation(now));
+      setGait(motionLabel(now));
+    }, 300);
     return () => clearInterval(id);
   }, []);
   useEffect(() => () => course.clear(), []);
@@ -116,6 +128,9 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
           <View className="flex-row items-center gap-2">
             <View className={`h-3 w-3 rounded-full ${STATUS_DOT[status]}`} />
             <Text className="text-white font-semibold">{STATUS_TEXT[status]}</Text>
+            {gait !== "unknown" && (
+              <Text className="rounded-lg bg-white/15 px-2 text-xs font-bold text-white">{GAIT_TEXT[gait]}</Text>
+            )}
           </View>
           {status === "streaming" && (
             <Text className="text-zinc-300 text-xs">
@@ -172,10 +187,10 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
       </View>
 
       {/* Курс, главная опасность, стоп */}
-      <View className="absolute bottom-10 w-full items-center gap-4 px-6">
+      <View className={landscape ? "absolute bottom-3 w-full flex-row items-stretch gap-3 px-4" : "absolute bottom-10 w-full items-center gap-4 px-6"}>
         {/* Большая кнопка, чтобы попасть не глядя: нажатие — запомнить курс, долгое — сбросить */}
         <TouchableOpacity
-          className={`w-full rounded-3xl py-4 items-center ${courseDev != null ? "bg-emerald-600" : "bg-blue-600"}`}
+          className={`${landscape ? "flex-1 py-3 justify-center" : "w-full py-4"} rounded-3xl items-center ${courseDev != null ? "bg-emerald-600" : "bg-blue-600"}`}
           onPress={setCourse}
           onLongPress={clearCourse}
           accessibilityRole="button"
@@ -187,16 +202,16 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
         </TouchableOpacity>
 
         <View
-          className="w-full rounded-3xl bg-black/70 px-5 py-4"
+          className={landscape ? "flex-[2] rounded-3xl bg-black/70 px-4 py-2 justify-center" : "w-full rounded-3xl bg-black/70 px-5 py-4"}
           accessibilityLiveRegion="polite"
           accessible
         >
           {primary ? (
-            <Text className="text-2xl font-black text-center" style={{ color: URGENCY_COLOR[primary.urgency] }}>
+            <Text className={`${landscape ? "text-lg" : "text-2xl"} font-black text-center`} style={{ color: URGENCY_COLOR[primary.urgency] }}>
               {describe(primary)}
             </Text>
           ) : (
-            <Text className="text-zinc-300 text-xl font-bold text-center">
+            <Text className={`text-zinc-300 ${landscape ? "text-base" : "text-xl"} font-bold text-center`}>
               {status === "streaming" ? "Path clear" : "Waiting for server"}
             </Text>
           )}
@@ -206,10 +221,10 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
         </View>
 
         <TouchableOpacity
-          className="bg-red-500 py-5 w-4/5 rounded-3xl items-center active:bg-red-600"
+          className={`bg-red-500 rounded-3xl items-center active:bg-red-600 ${landscape ? "flex-1 py-3 justify-center" : "py-5 w-4/5"}`}
           onPress={onStop}
         >
-          <Text className="text-white text-2xl font-black uppercase text-center">Stop</Text>
+          <Text className={`text-white ${landscape ? "text-lg" : "text-2xl"} font-black uppercase text-center`}>Stop</Text>
         </TouchableOpacity>
       </View>
     </View>

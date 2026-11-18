@@ -75,6 +75,9 @@ export interface PoseMessage {
   up: [number, number, number];
   /** Курс относительно камеры, градусы (> 0 правее): сервер выбирает сторону обхода ближе к нему. */
   course?: number | null;
+  /** Для записи сессии: что делает человек и куда смотрит камера (компас, градусы). */
+  motion?: "walking" | "standing" | "turning" | "unknown";
+  heading?: number | null;
 }
 
 // сервер -> клиент

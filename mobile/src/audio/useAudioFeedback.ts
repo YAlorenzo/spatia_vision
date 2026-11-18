@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Bypass, Group, Hint, Obstacle } from "../api/protocol";
 import { cameraTilt, TiltAdvice } from "../sensors/cameraTilt";
 import { course } from "../sensors/course";
+import { motion } from "../sensors/motion";
 import { announcer } from "./announcer";
 import { spatialAudio } from "./spatialAudio";
 
@@ -10,6 +11,7 @@ export function unlockAudio() {
   spatialAudio.unlock();
   announcer.unlock();
   cameraTilt.unlock();
+  motion.unlock();
 }
 
 interface Options {
@@ -53,9 +55,12 @@ export function useAudioFeedback({ obstacles, groups, hints, bypass, active, bee
       calm: spatialAudio.calm,
       heading: cameraTilt.heading(now),
       course: course.deviation(now),
+      gait: motion.walking(now),
+      turning: motion.turning(now),
     });
     // Осмотр (человек поворачивает телефон): сигнал тихий
     spatialAudio.scan = announcer.scanning;
+    spatialAudio.standing = motion.walking(now) === "standing";
   }, [obstacles, groups, hints, bypass, active]);
 }
 
