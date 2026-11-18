@@ -120,6 +120,7 @@ async def process_loop(ws: WebSocket, session: Session, slot: FrameSlot) -> None
             map=dbg.map_view,
             path_bearing=dbg.path_bearing,
             near=dbg.near_sides,
+            front=dbg.front,
             server_ms=round((loop.time() - t0) * 1000, 1),
             dropped=slot.dropped,
         ))

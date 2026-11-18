@@ -57,10 +57,11 @@ export interface SceneState {
   bypass: Bypass | null;
   map: MapView | null;
   near: { left: number | null; right: number | null } | null;
+  front: { d: number; bearing: number } | null;
 }
 
 const EMPTY_STATS: StreamStats = { fps: 0, rttMs: 0, serverMs: 0, frameKb: 0 };
-const EMPTY_SCENE: SceneState = { obstacles: [], groups: [], hints: [], bypass: null, map: null, near: null };
+const EMPTY_SCENE: SceneState = { obstacles: [], groups: [], hints: [], bypass: null, map: null, near: null, front: null };
 
 // Экран "карта" открыт — просим сервер присылать карту (иначе не гоняем лишние данные)
 let wantMap = false;
@@ -212,6 +213,7 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
           bypass: result.bypass ?? null,
           map: result.map ?? null,
           near: result.near ?? null,
+          front: result.front ?? null,
         });
         setStats(s);
       }
@@ -285,6 +287,7 @@ export function useServerStream({ url, cameraRef, cameraReady, enabled, scene, h
     bypass: sceneState.bypass,
     map: sceneState.map,
     near: sceneState.near,
+    front: sceneState.front,
     serverOutdated,
     stats,
     frameSize,

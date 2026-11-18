@@ -99,6 +99,8 @@ class Result(BaseModel):
     path_bearing: float | None = None  # куда ведёт маршрут по курсу, градусы от оси камеры (> 0 — правее)
     # Ближайшее препятствие сбоку рядом (по карте, в том числе вне кадра): {"left": 0.6, "right": null}, м
     near: dict | None = None
+    # Парктроник: ближайшее прямо перед камерой в этом кадре {"d": 2.4, "bearing": -3.0}; null — пусто
+    front: dict | None = None
     server_ms: float
     dropped: int  # сколько кадров сервер выбросил как устаревшие (за сессию)
 

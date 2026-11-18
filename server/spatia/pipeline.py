@@ -358,6 +358,8 @@ class Session:
             ] + [("obstacle", e[1], e[3], e[2]) for e in extras if e[2] < self.s.map_view_m / 2]) if self.want_map else None,
             path_bearing=None if path_bearing is None else round(path_bearing, 1),
             near_sides=self.map.near_sides(self.heading_deg),
+            front=front_distance(free_dbg.points if free_dbg is not None else None, objects,
+                                 self.s.corridor_half_width_m, self.s.front_max_range_m),
             timings_ms={
                 "detect": (t1 - t0) * 1000,
                 "depth": (t2 - t1) * 1000,
@@ -368,3 +370,25 @@ class Session:
         )
         self.frame_idx += 1
         return obstacles, debug
+
+
+def front_distance(points: np.ndarray | None, objects: list[TrackedObject], half_width: float,
+                   max_range: float) -> dict | None:
+    """Парктроник: расстояние до ближайшего, что ПРЯМО ПЕРЕД КАМЕРОЙ (полоса шириной с человека),
+    в каждом кадре — без подтверждений и выбора "главной угрозы". points — (N, 2) препятствия по
+    карте глубины (X вбок, Z вперёд), objects — люди/машины/предметы детектора.
+    {"d": метры, "bearing": градусы (< 0 левее)} или None — впереди пусто."""
+    cand: list[tuple[float, float]] = []  # (дистанция вперёд, смещение вбок)
+    if points is not None and len(points):
+        p = points[(np.abs(points[:, 0]) < half_width) & (points[:, 1] > 0.2) & (points[:, 1] < max_range)]
+        if len(p) >= 3:
+            # не самая ближняя точка (одиночный шум глубины), а 3-я по близости
+            i = np.argsort(p[:, 1])[min(2, len(p) - 1)]
+            cand.append((float(p[i, 1]), float(p[i, 0])))
+    for o in objects:
+        if o.kind != "obstacle" and o.in_path and 0.2 < o.forward_m < max_range:
+            cand.append((o.forward_m, math.copysign(o.lateral_m, o.bearing_deg)))
+    if not cand:
+        return None
+    d, x = min(cand)
+    return {"d": round(d, 2), "bearing": round(math.degrees(math.atan2(x, max(d, 0.1))), 1)}

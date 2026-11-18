@@ -111,6 +111,7 @@ export interface ResultMessage {
   map?: MapView | null;
   path_bearing?: number | null;
   near?: { left: number | null; right: number | null } | null; // препятствие сбоку рядом (по карте), м
+  front?: { d: number; bearing: number } | null; // парктроник: ближайшее прямо перед камерой, м / градусы
   server_ms: number;
   dropped: number;
 }

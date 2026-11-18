@@ -53,7 +53,7 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
     return () => setWantMap(false);
   }, [showMap]);
 
-  const { status, obstacles, groups, hints, bypass, map, near, serverOutdated, stats, frameSize, error } = useServerStream({
+  const { status, obstacles, groups, hints, bypass, map, near, front, serverOutdated, stats, frameSize, error } = useServerStream({
     url,
     cameraRef,
     cameraReady,
@@ -64,7 +64,7 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
   useEffect(() => setLabelScene(scene), [scene]);
 
   const active = status === "streaming";
-  useAudioFeedback({ obstacles, groups, hints, bypass, near, active, beeps, speech });
+  useAudioFeedback({ obstacles, groups, hints, bypass, near, front, active, beeps, speech });
   const tilt = useTiltAdvice(active);
   const connectionLost = useConnectionWatchdog(obstacles, speech);
 

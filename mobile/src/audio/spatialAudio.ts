@@ -2,24 +2,17 @@ import { Platform } from "react-native";
 import type { Obstacle } from "../api/protocol";
 
 /**
- * Звук "как парктроник" — ровный и понятный.
+ * Звук — ПАРКТРОНИК, привязанный к камере.
  *
- * ЧАСТОТА — ТОЛЬКО ПО РАССТОЯНИЮ и ступенями по 0.5 м (а не по времени до столкновения: скорость
- * сближения шумит, и ритм "дёргался"). Переход на соседнюю ступень — только если расстояние ушло
- * за границу на 0.15 м, поэтому ритм не прыгает туда-сюда.
- *     6–4 м  редкий тихий сигнал (жёлтая зона)          2–1.5 м  0.26 с
- *     4–3.5  0.70 с                                      1.5–1    0.17 с
- *     3.5–3  0.56 с                                      < 1 м    СПЛОШНОЙ тон — "стоп"
- *     3–2.5  0.44 с
- *     2.5–2  0.34 с
- * Препятствие на секунду пропало из кадра — сигнал держится 0.6 с (не обрывается рывком).
+ * Сервер в каждом кадре мерит расстояние до ближайшего, что прямо перед камерой (полоса шириной
+ * с человека), без подтверждений и выбора "главной угрозы" (поле front). Писк зависит только от него:
+ * чем ближе — тем чаще, плавно (6 м — 0.92 с, 4 м — 0.58, 3 м — 0.39, 2 м — 0.21, 1.2 м — 0.08),
+ * ближе 0.9 м — один непрерывный писк. Кадр без данных — держим последнее расстояние 0.5 с.
+ * Писк не замолкает, когда человек стоит или говорит голос (под голосом — тише).
  *
- * СТОРОНА — стерео: звук идёт в то ухо, где препятствие (угол растянут втрое: камера видит
- * всего ±20°, иначе всё звучало бы по центру).
- * ОБХОД — препятствие сбоку рядом (по карте, в том числе уже вне кадра) тихо тикает в своё ухо:
- * проходишь мимо стула справа — слышно справа, пока не прошёл.
- * Тембр: препятствие — ровный тон, человек — выше, транспорт — резкий.
- * Отдельно — тревога для того, что ЕДЕТ на тебя, если оно не главная опасность.
+ * СТОРОНА — стерео: писк в том ухе, где препятствие (угол растянут втрое: камера видит всего ±20°).
+ * ОБХОД — препятствие сбоку рядом (по карте, в том числе уже вне кадра) тихо тикает в своё ухо.
+ * Отдельно — тревога для того, что ЕДЕТ на тебя (двойной тон).
  */
 
 const STALE_MS = 1200; // давно нет данных от сервера — замолкаем
@@ -28,7 +21,19 @@ const HOLD_MS = 600; // главная опасность мигнула — д�
 const ALARM_INTERVAL_S = 0.9;
 const DIRECTION_GAIN = 3; // 10° в кадре -> 30° в наушниках
 const MASTER_GAIN = 1.25; // общая громкость сигналов
-const DUCK_GAIN = 0.15; // пока говорит голос — сигналы почти не слышны, слова важнее
+const DUCK_GAIN = 0.55; // пока говорит голос — писк тише, но не пропадает (иначе слышны одиночные пики)
+// ПАРКТРОНИК: расстояние до ближайшего прямо перед камерой (сервер, каждый кадр, поле front).
+// Интервал плавно сокращается с расстоянием; ближе SOLID_FRONT_M — один непрерывный писк.
+const FRONT_FAR_M = 6.0; // дальше — тишина
+const SOLID_FRONT_M = 0.9;
+const FRONT_HOLD_MS = 500; // кадр без данных — держим последнее расстояние, ритм не рвётся
+const FRONT_SMOOTH = 0.5; // сглаживание расстояния между кадрами (0..1, больше — быстрее)
+/** Интервал между писками по расстоянию: 6 м — 0.92 с, 4 м — 0.58, 3 м — 0.39, 2 м — 0.21, 1.2 м — 0.08. */
+export function frontInterval(d: number): number {
+  if (d <= SOLID_FRONT_M) return 0;
+  const t = Math.min(1, (d - SOLID_FRONT_M) / (FRONT_FAR_M - SOLID_FRONT_M));
+  return 0.07 + 0.85 * Math.pow(t, 1.3);
+}
 // Ступени: [до скольких метров, интервал с]; ближе SOLID_M — сплошной тон
 const SOLID_M = 1.0;
 const STEPS: [number, number][] = [
@@ -40,11 +45,7 @@ const STEPS: [number, number][] = [
   [4.0, 0.7],
   [6.0, 1.0],
 ];
-const FAR_LEVEL = 0.45; // жёлтая зона (6–4 м) — тише
 const HYST_M = 0.15;
-// Стоит перед препятствием — редкий тихий сигнал (не выключается)
-const CALM_INTERVAL_S = 1.6;
-const CALM_LEVEL = 0.3;
 // Обход: препятствие сбоку рядом
 const SIDE_FAR_M = 1.2;
 const SIDE_LEVEL = 0.35;
@@ -79,12 +80,15 @@ class SpatialAudio {
   private alarmPan: StereoPannerNode | null = null; // едущее на тебя (если не главное)
   private sidePan: StereoPannerNode | null = null; // препятствие сбоку при обходе
   private primary: Obstacle | null = null;
+  private front: { d: number; bearing: number } | null = null; // парктроник
+  private frontAt = 0;
   private primaryAt = 0;
   private primaryKey: string | null = null;
   private step = STEPS.length + 1;
   private alarm: Obstacle | null = null;
   private near: { left: number | null; right: number | null } = { left: null, right: null };
   private nextBeep = 0;
+  private lastBeep = 0;
   private nextAlarm = 0;
   private nextSide = 0;
   private sideTurn = 0; // по очереди левое / правое, если рядом с обеих сторон
@@ -139,9 +143,20 @@ class SpatialAudio {
   }
 
   /** Новые данные от сервера. near — ближайшее препятствие слева/справа рядом (по карте). */
-  update(obstacles: Obstacle[], near?: { left: number | null; right: number | null } | null) {
+  update(obstacles: Obstacle[], near?: { left: number | null; right: number | null } | null,
+         front?: { d: number; bearing: number } | null) {
     const now = Date.now();
     this.lastUpdate = now;
+    if (front) {
+      // сглаживаем, но приближение принимаем быстрее (безопаснее)
+      const prev = this.front;
+      const a = prev && front.d < prev.d ? Math.max(FRONT_SMOOTH, 0.7) : FRONT_SMOOTH;
+      this.front = prev ? { d: prev.d + a * (front.d - prev.d), bearing: front.bearing } : { ...front };
+      this.frontAt = now;
+      if (this.ctx) this.place(this.pan!, front.bearing);
+    } else if (now - this.frontAt > FRONT_HOLD_MS) {
+      this.front = null;
+    }
     this.near = near ?? { left: null, right: null };
     this.alarm = obstacles.find((o) => o.moving && o.threat && !o.primary) ?? null;
     const p = obstacles.find((o) => o.primary) ?? null;
@@ -205,6 +220,7 @@ class SpatialAudio {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     this.primary = this.alarm = null;
+    this.front = null;
     this.primaryKey = null;
     this.calm = false;
     this.calmSince = null;
@@ -217,31 +233,30 @@ class SpatialAudio {
     const fresh = Date.now() - this.lastUpdate < STALE_MS;
     const p = fresh && this.enabled ? this.primary : null;
     const now = ctx.currentTime;
-    const quiet = this.calm || this.scan || this.standing;
 
-    if (this.wasStanding && !this.standing) this.nextBeep = 0; // пошёл — обычный сигнал сразу
-    this.wasStanding = this.standing;
-
-    if (p && !p.moving && quiet) {
-      // Стоит: редкий тихий сигнал "препятствие всё ещё здесь", без сплошного тона
-      this.stopSolid();
-      if (now >= this.nextBeep) {
-        this.beep(this.pan!, TONE[p.kind], CALM_LEVEL);
-        this.nextBeep = now + CALM_INTERVAL_S;
-      }
-    } else if (p && this.step === 0) {
-      this.startSolid(p); // меньше метра — один сплошной тон
+    // Парктроник: чем ближе то, что прямо перед камерой, тем чаще; вплотную — непрерывно
+    const f = fresh && this.enabled ? this.front : null;
+    const iv = f && f.d <= FRONT_FAR_M ? frontInterval(f.d) : null;
+    if (iv === 0) {
+      this.startSolid(TONE.obstacle);
     } else {
       this.stopSolid();
-      if (p && this.step <= STEPS.length && now >= this.nextBeep) {
-        const far = this.step === STEPS.length; // 6–4 м — жёлтая зона, тише
-        this.beep(this.pan!, TONE[p.kind], far ? FAR_LEVEL : 1.0);
-        this.nextBeep = now + STEPS[this.step - 1][1];
+      if (iv != null) {
+        // интервал меняется с расстоянием сразу, не дожидаясь старого (иначе ритм "запаздывает")
+        this.nextBeep = Math.min(this.nextBeep, this.lastBeep + iv);
+        if (now >= this.nextBeep) {
+          this.beep(this.pan!, TONE.obstacle, 1.0);
+          this.lastBeep = now;
+          this.nextBeep = now + iv;
+        }
+      } else {
+        this.nextBeep = 0; // появилось препятствие — первый писк сразу
       }
     }
+    void p;
 
     // Обход: препятствие сбоку рядом — тихий тик в своё ухо (не пока стоит: это раздражает)
-    if (fresh && this.enabled && !quiet && this.solid == null && now >= this.nextSide) {
+    if (fresh && this.enabled && this.solid == null && now >= this.nextSide) {
       const { left, right } = this.near;
       const sides = ([["left", left], ["right", right]] as const).filter(([, d]) => d != null && d <= SIDE_FAR_M);
       if (sides.length) {
@@ -290,10 +305,10 @@ class SpatialAudio {
     osc.stop(t + 0.21);
   }
 
-  private startSolid(o: Obstacle) {
+  private startSolid(tone: { freq: number; type: OscillatorType }) {
     if (this.solid) return;
     const ctx = this.ctx!;
-    const osc = new OscillatorNode(ctx, { type: "square", frequency: TONE[o.kind].freq * 1.2 });
+    const osc = new OscillatorNode(ctx, { type: "square", frequency: tone.freq * 1.2 });
     const gain = ctx.createGain();
     gain.gain.setValueAtTime(0.0001, ctx.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.9, ctx.currentTime + 0.02);

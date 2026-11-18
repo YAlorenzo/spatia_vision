@@ -20,13 +20,14 @@ interface Options {
   hints: Hint[];
   bypass: Bypass | null;
   near?: { left: number | null; right: number | null } | null;
+  front?: { d: number; bearing: number } | null;
   active: boolean; // идёт сканирование и есть связь
   beeps: boolean;
   speech: boolean;
 }
 
 /** Подаёт результаты сервера в звук и голос. */
-export function useAudioFeedback({ obstacles, groups, hints, bypass, near, active, beeps, speech }: Options) {
+export function useAudioFeedback({ obstacles, groups, hints, bypass, near, front, active, beeps, speech }: Options) {
   useEffect(() => {
     spatialAudio.enabled = beeps;
     announcer.enabled = speech;
@@ -46,7 +47,7 @@ export function useAudioFeedback({ obstacles, groups, hints, bypass, near, activ
   useEffect(() => {
     if (!active) return;
     const now = Date.now();
-    spatialAudio.update(obstacles, near);
+    spatialAudio.update(obstacles, near, front);
     announcer.update({
       obstacles,
       groups,
@@ -62,7 +63,7 @@ export function useAudioFeedback({ obstacles, groups, hints, bypass, near, activ
     // Осмотр (человек поворачивает телефон): сигнал тихий
     spatialAudio.scan = announcer.scanning;
     spatialAudio.standing = motion.walking(now) === "standing";
-  }, [obstacles, groups, hints, bypass, near, active]);
+  }, [obstacles, groups, hints, bypass, near, front, active]);
 }
 
 const NO_DATA_MS = 3000; // столько нет ответов сервера — "нет связи"
