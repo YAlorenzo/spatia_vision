@@ -195,6 +195,17 @@ def health() -> dict:
     return {"ok": engine is not None}
 
 
+class NoCacheHtml(StaticFiles):
+    """Страницу (index.html) браузер не кэширует: иначе после пересборки фронта телефон показывает
+    старую версию. Скрипты кэшировать можно — у них в имени хэш, новая сборка — новое имя."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        if response.media_type == "text/html":
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
+
 # Веб-версия фронта (если собрана). Монтируем последней, чтобы не перекрыть /ws.
 if WEB_DIST.is_dir():
-    app.mount("/", StaticFiles(directory=WEB_DIST, html=True), name="web")
+    app.mount("/", NoCacheHtml(directory=WEB_DIST, html=True), name="web")
