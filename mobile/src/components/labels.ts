@@ -54,9 +54,10 @@ export const classLabel = (cls: string) => (cls === "pole" && indoor ? "Pillar" 
  * Расстояние, которое будет верным, когда голос его договорит. Фраза звучит ~1.5 с, человек идёт —
  * без упреждения "5 meters" звучит, когда до препятствия уже 3. Берём скорость сближения с сервера.
  */
-const SPEECH_LEAD_S = 0.8; // число звучит почти в начале фразы
+const SPEECH_LEAD_S = 0.4; // число звучит почти в начале фразы
 export function spokenDistance(o: Obstacle): number {
-  const closing = Math.max(0, Math.min(o.approach, 2.5)); // удаляется — не упреждаем; шум — ограничиваем
+  // удаляется или медленно — не упреждаем; больше быстрого шага — это шум
+  const closing = o.approach < 0.4 ? 0 : Math.min(o.approach, 1.5);
   return Math.max(0.5, o.distance - closing * SPEECH_LEAD_S);
 }
 

@@ -3,7 +3,6 @@ import type { Bypass, Group, Hint, Obstacle } from "../api/protocol";
 import { cameraTilt, TiltAdvice } from "../sensors/cameraTilt";
 import { course } from "../sensors/course";
 import { announcer } from "./announcer";
-import { haptics } from "./haptics";
 import { spatialAudio } from "./spatialAudio";
 
 /** Разблокировать звук и датчики — вызывать в обработчике нажатия (например, кнопка "Начать"). */
@@ -21,25 +20,21 @@ interface Options {
   active: boolean; // идёт сканирование и есть связь
   beeps: boolean;
   speech: boolean;
-  vibration: boolean;
 }
 
-/** Подаёт результаты сервера в звук, вибрацию и голос. */
-export function useAudioFeedback({ obstacles, groups, hints, bypass, active, beeps, speech, vibration }: Options) {
+/** Подаёт результаты сервера в звук и голос. */
+export function useAudioFeedback({ obstacles, groups, hints, bypass, active, beeps, speech }: Options) {
   useEffect(() => {
     spatialAudio.enabled = beeps;
     announcer.enabled = speech;
-    haptics.enabled = vibration;
-  }, [beeps, speech, vibration]);
+  }, [beeps, speech]);
 
   useEffect(() => {
     if (!active) return;
     spatialAudio.start();
-    haptics.start();
     announcer.onSpeakingChange = (speaking) => spatialAudio.duck(speaking);
     return () => {
       spatialAudio.stop();
-      haptics.stop();
       announcer.stop();
       announcer.onSpeakingChange = null;
     };
@@ -59,10 +54,8 @@ export function useAudioFeedback({ obstacles, groups, hints, bypass, active, bee
       heading: cameraTilt.heading(now),
       course: course.deviation(now),
     });
-    // Осмотр (человек поворачивает телефон): сигнал тихий, вибрации нет
+    // Осмотр (человек поворачивает телефон): сигнал тихий
     spatialAudio.scan = announcer.scanning;
-    haptics.calm = spatialAudio.calm || announcer.scanning;
-    haptics.update(obstacles);
   }, [obstacles, groups, hints, bypass, active]);
 }
 

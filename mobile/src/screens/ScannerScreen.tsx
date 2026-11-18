@@ -41,7 +41,6 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
   const [scene, setScene] = useState<Scene>("indoor"); // по умолчанию — помещение; на улице переключить
   const [beeps, setBeeps] = useState(true);
   const [speech, setSpeech] = useState(true);
-  const [vibration, setVibration] = useState(true);
   const url = useMemo(() => getServerUrl(), []);
 
   const { status, obstacles, groups, hints, bypass, stats, frameSize, error } = useServerStream({
@@ -55,7 +54,7 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
   useEffect(() => setLabelScene(scene), [scene]);
 
   const active = status === "streaming";
-  useAudioFeedback({ obstacles, groups, hints, bypass, active, beeps, speech, vibration });
+  useAudioFeedback({ obstacles, groups, hints, bypass, active, beeps, speech });
   const tilt = useTiltAdvice(active);
   const connectionLost = useConnectionWatchdog(obstacles, speech);
 
@@ -143,7 +142,6 @@ export const ScannerScreen = ({ onStop }: ScannerScreenProps) => {
             {[
               { label: "Beeps", on: beeps, toggle: () => setBeeps((v) => !v) },
               { label: "Voice", on: speech, toggle: () => setSpeech((v) => !v) },
-              { label: "Vibration", on: vibration, toggle: () => setVibration((v) => !v) },
             ].map((t) => (
               <TouchableOpacity
                 key={t.label}
